@@ -3,6 +3,12 @@
   "name": "Phaser DevTools",
   "description": "A Chrome DevTools panel for inspecting Phaser 3 games.",
   "version": "0.1.0",
+  "icons": {
+    "16": "icon.png",
+    "32": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  },
   "devtools_page": "devtools.html",
   "content_scripts": [
     {
