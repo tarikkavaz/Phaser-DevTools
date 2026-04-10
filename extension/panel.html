@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Phaser DevTools Panel</title>
+    <link rel="stylesheet" href="panel.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1 class="title">Phaser DevTools</h1>
+          <p id="status" class="status">Ready</p>
+        </div>
+        <div class="toolbar-actions">
+          <button id="pick-button" class="secondary-button" type="button">Pick on page</button>
+          <button id="refresh-button" class="refresh-button" type="button">Refresh</button>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section id="empty-state" class="empty-state">
+          <h2>No Phaser game detected on this page</h2>
+          <p>Open a page running Phaser 3 and click Refresh.</p>
+        </section>
+
+        <div id="content" class="content hidden">
+          <section class="panel-card">
+            <div class="section-heading">
+              <h2>Game Info</h2>
+            </div>
+            <dl class="info-grid">
+              <div class="info-row">
+                <dt>Phaser detected</dt>
+                <dd id="game-detected">-</dd>
+              </div>
+              <div class="info-row">
+                <dt>Width</dt>
+                <dd id="game-width">-</dd>
+              </div>
+              <div class="info-row">
+                <dt>Height</dt>
+                <dd id="game-height">-</dd>
+              </div>
+              <div class="info-row">
+                <dt>Renderer</dt>
+                <dd id="game-renderer">-</dd>
+              </div>
+              <div class="info-row">
+                <dt>Scene count</dt>
+                <dd id="scene-count">-</dd>
+              </div>
+            </dl>
+          </section>
+
+          <div class="panel-grid">
+            <section class="panel-card">
+              <div class="section-heading">
+                <h2>Scenes</h2>
+              </div>
+              <div id="scene-list" class="list" role="list"></div>
+            </section>
+
+            <section class="panel-card">
+              <div class="section-heading">
+                <h2>Display Objects</h2>
+                <p id="object-list-title" class="section-meta">Select a scene</p>
+              </div>
+              <div class="tree-toolbar">
+                <input
+                  id="object-filter"
+                  class="tree-filter-input"
+                  type="search"
+                  placeholder="Filter by name, type, or path"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+                <div id="breadcrumbs" class="breadcrumbs"></div>
+              </div>
+              <div id="object-list" class="list object-list" role="list" tabindex="0"></div>
+            </section>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <script src="panel-bridge.js"></script>
+    <script src="panel.js"></script>
+  </body>
+</html>
