@@ -1052,6 +1052,36 @@
       name.className = "tree-row-name";
       name.textContent = displayObject.name || displayObject.type || "Unnamed object";
 
+      var detailsForRow =
+        state.objectDetails &&
+        state.objectDetails.object &&
+        state.objectDetails.object.path === displayObject.path
+          ? state.objectDetails.object
+          : null;
+
+      if (
+        displayObject.path === state.selectedObjectPath &&
+        detailsForRow &&
+        detailsForRow.canReset
+      ) {
+        var titleRow = document.createElement("div");
+        titleRow.className = "tree-row-title-row";
+
+        var resetButton = document.createElement("button");
+        resetButton.type = "button";
+        resetButton.className = "tree-row-reset-button";
+        resetButton.dataset.action = "reset";
+        resetButton.dataset.objectPath = detailsForRow.path;
+        resetButton.textContent = "Reset";
+        resetButton.title = "Restore original transform and visibility";
+
+        titleRow.appendChild(name);
+        titleRow.appendChild(resetButton);
+        mainButton.appendChild(titleRow);
+      } else {
+        mainButton.appendChild(name);
+      }
+
       var meta = document.createElement("div");
       meta.className = "tree-row-meta";
 
@@ -1070,7 +1100,6 @@
       }
 
       main.appendChild(actions);
-      mainButton.appendChild(name);
       mainButton.appendChild(meta);
       main.appendChild(mainButton);
 
@@ -1823,6 +1852,33 @@
     setStatus((nextVisible ? "Showed " : "Hid ") + objectPath, false);
   }
 
+  async function resetObjectEdits(objectPath) {
+    if (!objectPath || !state.selectedSceneKey) {
+      return;
+    }
+
+    rememberObjectListScroll();
+
+    var result = await window.PhaserBridge.resetObjectEdits(state.selectedSceneKey, objectPath);
+
+    if (result && result.error) {
+      setStatus(result.error, true);
+      return;
+    }
+
+    await loadSelectedSceneObjects();
+
+    if (state.selectedObjectPath === objectPath) {
+      state.objectDetails = result && result.object ? result : null;
+      renderObjectList();
+      await syncPageHighlight();
+    } else {
+      renderObjectList();
+    }
+
+    setStatus("Reset edits on " + objectPath, false);
+  }
+
   function isEditableInspectorTarget(target) {
     return !!(target && target.closest(".inline-inspector-control"));
   }
@@ -2196,6 +2252,11 @@
 
         if (actionName === "visibility") {
           await changeObjectVisibility(actionPath);
+          return;
+        }
+
+        if (actionName === "reset") {
+          await resetObjectEdits(actionPath);
         }
       } catch (error) {
         setStatus(error.message || "Failed to update object", true);

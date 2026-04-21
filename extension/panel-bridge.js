@@ -39,8 +39,16 @@
         window.__PHASER_DEVTOOLS__.uiState = {
           highlight: null,
           pickMode: { enabled: false, sceneKey: null },
-          pendingSelection: null
+          pendingSelection: null,
+          objectEditBaselines: {}
         };
+      }
+
+      if (
+        !window.__PHASER_DEVTOOLS__.uiState.objectEditBaselines ||
+        typeof window.__PHASER_DEVTOOLS__.uiState.objectEditBaselines !== "object"
+      ) {
+        window.__PHASER_DEVTOOLS__.uiState.objectEditBaselines = {};
       }
 
       return window.__PHASER_DEVTOOLS__;
@@ -701,7 +709,68 @@
       };
     }
 
-    function serializeDisplayObjectDetails(displayObject, objectPath) {
+    function getObjectEditBaselineKey(sceneKey, objectPath) {
+      return String(sceneKey || "") + "::" + String(objectPath || "");
+    }
+
+    function getEditableObjectSnapshot(displayObject) {
+      if (!displayObject) {
+        return null;
+      }
+
+      return {
+        x: toNumber(displayObject.x),
+        y: toNumber(displayObject.y),
+        scaleX: toNumber(displayObject.scaleX),
+        scaleY: toNumber(displayObject.scaleY),
+        alpha: toNumber(displayObject.alpha),
+        visible: toBoolean(displayObject.visible),
+        rotation: toNumber(displayObject.rotation)
+      };
+    }
+
+    function captureObjectEditBaseline(sceneKey, objectPath, displayObject) {
+      var registry = getRegistry();
+      var baselineKey = getObjectEditBaselineKey(sceneKey, objectPath);
+
+      if (registry.uiState.objectEditBaselines[baselineKey]) {
+        return;
+      }
+
+      registry.uiState.objectEditBaselines[baselineKey] = getEditableObjectSnapshot(displayObject);
+    }
+
+    function getObjectEditBaseline(sceneKey, objectPath) {
+      var registry = getRegistry();
+      return registry.uiState.objectEditBaselines[getObjectEditBaselineKey(sceneKey, objectPath)] || null;
+    }
+
+    function clearObjectEditBaseline(sceneKey, objectPath) {
+      var registry = getRegistry();
+      delete registry.uiState.objectEditBaselines[getObjectEditBaselineKey(sceneKey, objectPath)];
+    }
+
+    function applyEditableObjectSnapshot(displayObject, snapshot) {
+      if (!displayObject || !snapshot) {
+        return;
+      }
+
+      if (snapshot.visible === true || snapshot.visible === false) {
+        if (typeof displayObject.setVisible === "function") {
+          displayObject.setVisible(snapshot.visible);
+        } else {
+          displayObject.visible = snapshot.visible;
+        }
+      }
+
+      ["x", "y", "scaleX", "scaleY", "alpha", "rotation"].forEach(function (property) {
+        if (typeof snapshot[property] === "number" && Number.isFinite(snapshot[property])) {
+          displayObject[property] = snapshot[property];
+        }
+      });
+    }
+
+    function serializeDisplayObjectDetails(sceneKey, displayObject, objectPath) {
       if (!displayObject) {
         return null;
       }
@@ -718,7 +787,8 @@
         visible: toBoolean(displayObject.visible),
         rotation: toNumber(displayObject.rotation),
         textureKey: getTextureKey(displayObject),
-        childCount: getObjectChildren(displayObject).length
+        childCount: getObjectChildren(displayObject).length,
+        canReset: !!getObjectEditBaseline(sceneKey, objectPath)
       };
     }
 
@@ -1235,7 +1305,7 @@
       return {
         sceneKey: sceneKey,
         objectPath: objectPath,
-        object: serializeDisplayObjectDetails(displayObject, objectPath)
+        object: serializeDisplayObjectDetails(sceneKey, displayObject, objectPath)
       };
     }
 
@@ -1255,15 +1325,17 @@
       }
 
       if (typeof displayObject.setVisible === "function") {
+        captureObjectEditBaseline(sceneKey, objectPath, displayObject);
         displayObject.setVisible(!!visible);
       } else {
+        captureObjectEditBaseline(sceneKey, objectPath, displayObject);
         displayObject.visible = !!visible;
       }
 
       return {
         sceneKey: sceneKey,
         objectPath: objectPath,
-        object: serializeDisplayObjectDetails(displayObject, objectPath)
+        object: serializeDisplayObjectDetails(sceneKey, displayObject, objectPath)
       };
     }
 
@@ -1303,6 +1375,7 @@
       }
 
       if (editableProperties[property] === "boolean") {
+        captureObjectEditBaseline(sceneKey, objectPath, displayObject);
         if (property === "visible" && typeof displayObject.setVisible === "function") {
           displayObject.setVisible(!!value);
         } else {
@@ -1315,18 +1388,55 @@
           return {
             sceneKey: sceneKey,
             objectPath: objectPath,
-            object: serializeDisplayObjectDetails(displayObject, objectPath),
+            object: serializeDisplayObjectDetails(sceneKey, displayObject, objectPath),
             error: "Value must be a finite number"
           };
         }
 
+        captureObjectEditBaseline(sceneKey, objectPath, displayObject);
         displayObject[property] = parsedValue;
       }
 
       return {
         sceneKey: sceneKey,
         objectPath: objectPath,
-        object: serializeDisplayObjectDetails(displayObject, objectPath)
+        object: serializeDisplayObjectDetails(sceneKey, displayObject, objectPath)
+      };
+    }
+
+    function resetObjectEdits(sceneKey, objectPath) {
+      ensureInteractiveTools();
+
+      var game = findGame();
+      var scene = game ? getSceneByKey(game, sceneKey) : null;
+      var displayObject = scene ? getDisplayObjectByPath(scene, objectPath) : null;
+      var baseline = getObjectEditBaseline(sceneKey, objectPath);
+
+      if (!displayObject) {
+        return {
+          sceneKey: sceneKey,
+          objectPath: objectPath,
+          object: null,
+          error: "Display object not found"
+        };
+      }
+
+      if (!baseline) {
+        return {
+          sceneKey: sceneKey,
+          objectPath: objectPath,
+          object: serializeDisplayObjectDetails(sceneKey, displayObject, objectPath),
+          error: "No saved edits to reset"
+        };
+      }
+
+      applyEditableObjectSnapshot(displayObject, baseline);
+      clearObjectEditBaseline(sceneKey, objectPath);
+
+      return {
+        sceneKey: sceneKey,
+        objectPath: objectPath,
+        object: serializeDisplayObjectDetails(sceneKey, displayObject, objectPath)
       };
     }
 
@@ -1731,6 +1841,13 @@
         };
       }
 
+      if (command.type === "resetObjectEdits") {
+        return {
+          ok: true,
+          data: resetObjectEdits(command.sceneKey, command.objectPath)
+        };
+      }
+
       if (command.type === "updateSceneCameraProperty") {
         return {
           ok: true,
@@ -1838,6 +1955,14 @@
         objectPath: objectPath,
         property: property,
         value: value
+      });
+    },
+
+    resetObjectEdits: function (sceneKey, objectPath) {
+      return evaluateCommand({
+        type: "resetObjectEdits",
+        sceneKey: sceneKey,
+        objectPath: objectPath
       });
     },
 
