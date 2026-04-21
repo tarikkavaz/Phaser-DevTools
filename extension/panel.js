@@ -8,6 +8,8 @@
     objectDetails: null,
     selectedSceneKey: null,
     selectedObjectPath: null,
+    outlinedSceneKey: null,
+    outlinedObjectPath: null,
     expandedPaths: {},
     filterQuery: "",
     isRefreshing: false,
@@ -15,7 +17,10 @@
     lastRefreshAt: 0,
     sceneRequestId: 0,
     inspectorRequestId: 0,
-    pickModeEnabled: false
+    pickModeEnabled: false,
+    gameInfoExpanded: false,
+    pendingInspectorFocus: null,
+    pendingObjectListScrollTop: null
   };
 
   var elements = {};
@@ -31,6 +36,8 @@
     elements.gameHeight = document.getElementById("game-height");
     elements.gameRenderer = document.getElementById("game-renderer");
     elements.sceneCount = document.getElementById("scene-count");
+    elements.gameInfoToggle = document.getElementById("game-info-toggle");
+    elements.gameInfoCard = document.getElementById("game-info-card");
     elements.sceneList = document.getElementById("scene-list");
     elements.objectList = document.getElementById("object-list");
     elements.objectListTitle = document.getElementById("object-list-title");
@@ -71,11 +78,91 @@
     return "-";
   }
 
-  function createPill(text) {
+  function createPill(text, variant) {
     var pill = document.createElement("span");
-    pill.className = "pill";
+    pill.className = "pill" + (variant ? " pill-" + variant : "");
     pill.textContent = text;
     return pill;
+  }
+
+  function createSvgIcon() {
+    return document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  }
+
+  function createSvgNode(name) {
+    return document.createElementNS("http://www.w3.org/2000/svg", name);
+  }
+
+  function createVisibilityIcon(isHidden) {
+    var svg = createSvgIcon();
+    svg.setAttribute("viewBox", "0 0 16 16");
+    svg.setAttribute("aria-hidden", "true");
+    svg.classList.add("row-action-icon");
+
+    var eyePath = createSvgNode("path");
+    eyePath.setAttribute(
+      "d",
+      "M1.5 8c1.7-2.6 4-3.9 6.5-3.9S12.8 5.4 14.5 8c-1.7 2.6-4 3.9-6.5 3.9S3.2 10.6 1.5 8Z"
+    );
+    eyePath.setAttribute("fill", "none");
+    eyePath.setAttribute("stroke", "currentColor");
+    eyePath.setAttribute("stroke-width", "1.4");
+    eyePath.setAttribute("stroke-linecap", "round");
+    eyePath.setAttribute("stroke-linejoin", "round");
+    svg.appendChild(eyePath);
+
+    var pupil = createSvgNode("circle");
+    pupil.setAttribute("cx", "8");
+    pupil.setAttribute("cy", "8");
+    pupil.setAttribute("r", "1.7");
+    pupil.setAttribute("fill", "currentColor");
+    svg.appendChild(pupil);
+
+    if (isHidden) {
+      var slash = createSvgNode("path");
+      slash.setAttribute("d", "M3 13 13 3");
+      slash.setAttribute("fill", "none");
+      slash.setAttribute("stroke", "currentColor");
+      slash.setAttribute("stroke-width", "1.5");
+      slash.setAttribute("stroke-linecap", "round");
+      svg.appendChild(slash);
+    }
+
+    return svg;
+  }
+
+  function createOutlineIcon(isActive) {
+    var svg = createSvgIcon();
+    svg.setAttribute("viewBox", "0 0 16 16");
+    svg.setAttribute("aria-hidden", "true");
+    svg.classList.add("row-action-icon");
+
+    var frame = createSvgNode("rect");
+    frame.setAttribute("x", "3");
+    frame.setAttribute("y", "3");
+    frame.setAttribute("width", "10");
+    frame.setAttribute("height", "10");
+    frame.setAttribute("rx", "1.5");
+    frame.setAttribute("fill", "none");
+    frame.setAttribute("stroke", "currentColor");
+    frame.setAttribute("stroke-width", isActive ? "1.8" : "1.4");
+    svg.appendChild(frame);
+
+    if (isActive) {
+      var glow = createSvgNode("rect");
+      glow.setAttribute("x", "1.5");
+      glow.setAttribute("y", "1.5");
+      glow.setAttribute("width", "13");
+      glow.setAttribute("height", "13");
+      glow.setAttribute("rx", "2");
+      glow.setAttribute("fill", "none");
+      glow.setAttribute("stroke", "currentColor");
+      glow.setAttribute("stroke-width", "1.2");
+      glow.setAttribute("opacity", "0.6");
+      svg.appendChild(glow);
+    }
+
+    return svg;
   }
 
   function getBranchHue(depth) {
@@ -87,8 +174,13 @@
     elements.pickButton.textContent = state.pickModeEnabled ? "Cancel pick" : "Pick on page";
   }
 
+  function isObjectOutlined(sceneKey, objectPath) {
+    return state.outlinedSceneKey === sceneKey && state.outlinedObjectPath === objectPath;
+  }
+
   function clearGameInfo() {
-    elements.gameDetected.textContent = "-";
+    elements.gameDetected.className = "detection-light is-unknown";
+    elements.gameDetected.setAttribute("aria-label", "Phaser detection unknown");
     elements.gameWidth.textContent = "-";
     elements.gameHeight.textContent = "-";
     elements.gameRenderer.textContent = "-";
@@ -103,11 +195,22 @@
       return;
     }
 
-    elements.gameDetected.textContent = state.snapshot.detected ? "Yes" : "No";
+    elements.gameDetected.className =
+      "detection-light " + (state.snapshot.detected ? "is-detected" : "is-missing");
+    elements.gameDetected.setAttribute(
+      "aria-label",
+      state.snapshot.detected ? "Phaser detected" : "Phaser not detected"
+    );
     elements.gameWidth.textContent = formatNumber(game.width);
     elements.gameHeight.textContent = formatNumber(game.height);
     elements.gameRenderer.textContent = formatValue(game.rendererType);
     elements.sceneCount.textContent = formatValue(game.sceneCount);
+  }
+
+  function renderGameInfoVisibility() {
+    elements.gameInfoToggle.textContent = state.gameInfoExpanded ? "Hide game info" : "Show game info";
+    elements.gameInfoToggle.setAttribute("aria-expanded", state.gameInfoExpanded ? "true" : "false");
+    elements.gameInfoCard.classList.toggle("hidden", !state.gameInfoExpanded);
   }
 
   function getParentPath(objectPath) {
@@ -131,6 +234,77 @@
     }
 
     return objectPath.split(".");
+  }
+
+  function pathsSharePrefix(leftSegments, rightSegments, length) {
+    if (length <= 0) {
+      return true;
+    }
+
+    if (leftSegments.length < length || rightSegments.length < length) {
+      return false;
+    }
+
+    for (var index = 0; index < length; index += 1) {
+      if (leftSegments[index] !== rightSegments[index]) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  function shouldShowAncestorGuide(currentSegments, nextSegments, level) {
+    return pathsSharePrefix(currentSegments, nextSegments, level + 1);
+  }
+
+  function shouldShowNodeGuideBottom(currentSegments, nextSegments) {
+    if (currentSegments.length <= 1 || nextSegments.length === 0) {
+      return false;
+    }
+
+    if (pathsSharePrefix(currentSegments, nextSegments, currentSegments.length)) {
+      return true;
+    }
+
+    return (
+      nextSegments.length === currentSegments.length &&
+      pathsSharePrefix(currentSegments, nextSegments, currentSegments.length - 1)
+    );
+  }
+
+  function createTreeGuides(displayObject, nextDisplayObject) {
+    var currentSegments = getPathSegments(displayObject.path);
+    var depth = Math.max(0, currentSegments.length - 1);
+
+    if (depth === 0) {
+      return null;
+    }
+
+    var nextSegments = nextDisplayObject ? getPathSegments(nextDisplayObject.path) : [];
+    var guides = document.createElement("span");
+    guides.className = "tree-guides";
+
+    for (var level = 0; level < depth - 1; level += 1) {
+      var ancestorGuide = document.createElement("span");
+      ancestorGuide.className = "tree-guide";
+
+      if (shouldShowAncestorGuide(currentSegments, nextSegments, level)) {
+        ancestorGuide.className += " is-active";
+      }
+
+      guides.appendChild(ancestorGuide);
+    }
+
+    var nodeGuide = document.createElement("span");
+    nodeGuide.className = "tree-guide tree-guide-node";
+
+    if (shouldShowNodeGuideBottom(currentSegments, nextSegments)) {
+      nodeGuide.className += " has-bottom";
+    }
+
+    guides.appendChild(nodeGuide);
+    return guides;
   }
 
   function isAncestorPath(ancestorPath, targetPath) {
@@ -372,12 +546,12 @@
 
     var objectDetails = details.object;
     var editableFields = [
-      ["X", "x", objectDetails.x, "number", "0.1"],
-      ["Y", "y", objectDetails.y, "number", "0.1"],
-      ["Scale X", "scaleX", objectDetails.scaleX, "number", "0.1"],
-      ["Scale Y", "scaleY", objectDetails.scaleY, "number", "0.1"],
-      ["Alpha", "alpha", objectDetails.alpha, "number", "0.05"],
-      ["Rotation", "rotation", objectDetails.rotation, "number", "0.05"],
+      ["X", "x", objectDetails.x, "number", "1"],
+      ["Y", "y", objectDetails.y, "number", "1"],
+      ["Scale X", "scaleX", objectDetails.scaleX, "number", "1"],
+      ["Scale Y", "scaleY", objectDetails.scaleY, "number", "1"],
+      ["Alpha", "alpha", objectDetails.alpha, "number", "1"],
+      ["Rotation", "rotation", objectDetails.rotation, "number", "1"],
       ["Visible", "visible", objectDetails.visible, "checkbox", null]
     ];
     var readonlyFields = [
@@ -447,6 +621,98 @@
     row.appendChild(inspector);
   }
 
+  function rememberInspectorFocus(objectPath, editKey) {
+    if (!objectPath || !editKey) {
+      state.pendingInspectorFocus = null;
+      state.pendingObjectListScrollTop = null;
+      return;
+    }
+
+    state.pendingInspectorFocus = {
+      objectPath: objectPath,
+      editKey: editKey
+    };
+    state.pendingObjectListScrollTop = elements.objectList ? elements.objectList.scrollTop : null;
+  }
+
+  function rememberObjectListScroll() {
+    state.pendingObjectListScrollTop = elements.objectList ? elements.objectList.scrollTop : null;
+  }
+
+  function restorePendingObjectListScroll() {
+    if (state.pendingObjectListScrollTop === null || !elements.objectList) {
+      return;
+    }
+
+    elements.objectList.scrollTop = state.pendingObjectListScrollTop;
+    state.pendingObjectListScrollTop = null;
+  }
+
+  function restorePendingInspectorFocus() {
+    if (!state.pendingInspectorFocus) {
+      return;
+    }
+
+    var controls = elements.objectList.querySelectorAll(".inline-inspector-control");
+    var focusTarget = null;
+
+    Array.prototype.some.call(controls, function (control) {
+      if (
+        control.dataset &&
+        control.dataset.objectPath === state.pendingInspectorFocus.objectPath &&
+        control.dataset.editKey === state.pendingInspectorFocus.editKey
+      ) {
+        focusTarget = control;
+        return true;
+      }
+
+      return false;
+    });
+
+    if (focusTarget) {
+      focusTarget.focus({ preventScroll: true });
+    }
+
+    state.pendingInspectorFocus = null;
+  }
+
+  async function commitInspectorControlValue(control, options) {
+    if (!control || !control.dataset) {
+      return;
+    }
+
+    if (options && options.preserveFocus) {
+      rememberInspectorFocus(control.dataset.objectPath, control.dataset.editKey);
+    }
+
+    await updateObjectProperty(
+      control.dataset.objectPath,
+      control.dataset.editKey,
+      control.type === "checkbox" ? control.checked : control.value,
+      control.type
+    );
+  }
+
+  function toggleObjectSelection(objectPath) {
+    if (!objectPath) {
+      return Promise.resolve();
+    }
+
+    if (objectPath === state.selectedObjectPath) {
+      return clearSelectedObject();
+    }
+
+    return selectObject(objectPath);
+  }
+
+  function bindTreeRowSelect(mainButton, objectPath) {
+    mainButton.addEventListener("click", function () {
+      toggleObjectSelection(objectPath).catch(function (error) {
+        setStatus(error.message || "Failed to load object details", true);
+      });
+    });
+  }
+
   function renderObjectList() {
     elements.objectList.innerHTML = "";
 
@@ -471,7 +737,7 @@
     var contextMap = getFilterContextMap(query);
     var fragment = document.createDocumentFragment();
 
-    visibleObjects.forEach(function (displayObject) {
+    visibleObjects.forEach(function (displayObject, index) {
       var row = document.createElement("div");
       row.className =
         "list-row tree-row" +
@@ -498,9 +764,7 @@
       var main = document.createElement("div");
       main.className = "tree-row-main";
 
-      var indent = document.createElement("span");
-      indent.className = "tree-indent";
-      indent.style.width = Math.max(0, (displayObject.depth || 0) - 1) * 4 + "px";
+      var guides = createTreeGuides(displayObject, visibleObjects[index + 1] || null);
 
       var toggle = document.createElement("button");
       toggle.type = "button";
@@ -514,14 +778,68 @@
             : "+"
           : "·";
 
+      if (guides) {
+        main.appendChild(guides);
+      }
+
+      main.appendChild(toggle);
+      bindTreeRowSelect(mainButton, displayObject.path);
+
+      var actions = document.createElement("div");
+      actions.className = "tree-row-actions tree-row-actions-inline";
+
+      var infoButton = document.createElement("button");
+      infoButton.type = "button";
+      infoButton.className =
+        "row-action-button row-action-icon-button" +
+        (displayObject.path === state.selectedObjectPath ? " is-active" : "");
+      infoButton.dataset.action = "info";
+      infoButton.dataset.objectPath = displayObject.path;
+      infoButton.setAttribute(
+        "aria-label",
+        displayObject.path === state.selectedObjectPath ? "Close object details" : "Show object details"
+      );
+      infoButton.title =
+        displayObject.path === state.selectedObjectPath ? "Close details" : "Show details";
+      infoButton.textContent = "i";
+
+      var outlineButton = document.createElement("button");
+      outlineButton.type = "button";
+      outlineButton.className =
+        "row-action-button row-action-icon-button" +
+        (isObjectOutlined(state.selectedSceneKey, displayObject.path) ? " is-active" : "");
+      outlineButton.dataset.action = "outline";
+      outlineButton.dataset.objectPath = displayObject.path;
+      outlineButton.setAttribute(
+        "aria-label",
+        isObjectOutlined(state.selectedSceneKey, displayObject.path) ? "Hide outline" : "Show outline"
+      );
+      outlineButton.title = isObjectOutlined(state.selectedSceneKey, displayObject.path)
+        ? "Hide outline"
+        : "Show outline";
+      outlineButton.appendChild(
+        createOutlineIcon(isObjectOutlined(state.selectedSceneKey, displayObject.path))
+      );
+
+      var visibilityButton = document.createElement("button");
+      visibilityButton.type = "button";
+      visibilityButton.className = "row-action-button row-action-icon-button";
+      visibilityButton.dataset.action = "visibility";
+      visibilityButton.dataset.objectPath = displayObject.path;
+      visibilityButton.setAttribute(
+        "aria-label",
+        displayObject.visible === false ? "Show object" : "Hide object"
+      );
+      visibilityButton.title = displayObject.visible === false ? "Show object" : "Hide object";
+      visibilityButton.appendChild(createVisibilityIcon(displayObject.visible === false));
+
+      actions.appendChild(outlineButton);
+      actions.appendChild(visibilityButton);
+      actions.appendChild(infoButton);
+
       var name = document.createElement("span");
       name.className = "tree-row-name";
       name.textContent = displayObject.name || displayObject.type || "Unnamed object";
-
-      main.appendChild(indent);
-      main.appendChild(toggle);
-      main.appendChild(name);
-      mainButton.appendChild(main);
 
       var meta = document.createElement("div");
       meta.className = "tree-row-meta";
@@ -537,33 +855,15 @@
       }
 
       if (displayObject.visible === false) {
-        meta.appendChild(createPill("hidden"));
+        meta.appendChild(createPill("hidden", "hidden"));
       }
 
+      main.appendChild(actions);
+      mainButton.appendChild(name);
       mainButton.appendChild(meta);
+      main.appendChild(mainButton);
 
-      var actions = document.createElement("div");
-      actions.className = "tree-row-actions";
-
-      var outlineButton = document.createElement("button");
-      outlineButton.type = "button";
-      outlineButton.className = "row-action-button";
-      outlineButton.dataset.action = "outline";
-      outlineButton.dataset.objectPath = displayObject.path;
-      outlineButton.textContent = "Outline";
-
-      var visibilityButton = document.createElement("button");
-      visibilityButton.type = "button";
-      visibilityButton.className = "row-action-button";
-      visibilityButton.dataset.action = "visibility";
-      visibilityButton.dataset.objectPath = displayObject.path;
-      visibilityButton.textContent = displayObject.visible === false ? "Show" : "Hide";
-
-      actions.appendChild(outlineButton);
-      actions.appendChild(visibilityButton);
-
-      header.appendChild(mainButton);
-      header.appendChild(actions);
+      header.appendChild(main);
       row.appendChild(header);
 
       if (displayObject.path === state.selectedObjectPath) {
@@ -579,10 +879,15 @@
     var selectedRow = elements.objectList.querySelector(
       '.tree-row[data-object-path="' + state.selectedObjectPath + '"]'
     );
+    var shouldPreserveObjectListScroll = state.pendingObjectListScrollTop !== null;
 
-    if (selectedRow) {
+    restorePendingObjectListScroll();
+
+    if (selectedRow && !state.pendingInspectorFocus && !shouldPreserveObjectListScroll) {
       selectedRow.scrollIntoView({ block: "nearest" });
     }
+
+    restorePendingInspectorFocus();
   }
 
   function renderContentVisibility() {
@@ -594,6 +899,7 @@
 
   function renderAll() {
     renderContentVisibility();
+    renderGameInfoVisibility();
     renderGameInfo();
     renderSceneList();
     renderObjectList();
@@ -605,12 +911,12 @@
   }
 
   async function syncPageHighlight() {
-    if (!state.selectedSceneKey || !state.selectedObjectPath) {
+    if (!state.outlinedSceneKey || !state.outlinedObjectPath) {
       await window.PhaserBridge.clearHighlight();
       return;
     }
 
-    await window.PhaserBridge.highlightObject(state.selectedSceneKey, state.selectedObjectPath);
+    await window.PhaserBridge.highlightObject(state.outlinedSceneKey, state.outlinedObjectPath);
   }
 
   async function loadSelectedSceneObjects() {
@@ -688,6 +994,8 @@
       if (!state.snapshot.detected) {
         state.selectedSceneKey = null;
         state.selectedObjectPath = null;
+        state.outlinedSceneKey = null;
+        state.outlinedObjectPath = null;
         state.sceneObjects = [];
         state.objectDetails = null;
         renderAll();
@@ -750,6 +1058,8 @@
   async function applySelectedObject(sceneKey, objectPath, sourceLabel) {
     state.selectedSceneKey = sceneKey;
     state.selectedObjectPath = objectPath;
+    state.outlinedSceneKey = sceneKey;
+    state.outlinedObjectPath = objectPath;
     ensureExpandedAncestors(objectPath);
 
     renderSceneList();
@@ -779,6 +1089,8 @@
     }
 
     state.selectedObjectPath = objectPath;
+    state.outlinedSceneKey = state.selectedSceneKey;
+    state.outlinedObjectPath = objectPath;
     ensureExpandedAncestors(objectPath);
     renderObjectList();
     elements.objectList.focus();
@@ -789,6 +1101,16 @@
     setStatus("Inspecting object " + objectPath, false);
   }
 
+  async function clearSelectedObject() {
+    state.selectedObjectPath = null;
+    state.objectDetails = null;
+    state.outlinedSceneKey = null;
+    state.outlinedObjectPath = null;
+    renderObjectList();
+    await window.PhaserBridge.clearHighlight();
+    setStatus("Closed object inspector", false);
+  }
+
   async function changeObjectVisibility(objectPath) {
     var objectSummary = getObjectByPath(objectPath);
 
@@ -796,9 +1118,7 @@
       return;
     }
 
-    if (state.selectedObjectPath !== objectPath) {
-      await selectObject(objectPath);
-    }
+    rememberObjectListScroll();
 
     var nextVisible = objectSummary.visible === false;
     var details = await window.PhaserBridge.setObjectVisibility(
@@ -807,15 +1127,21 @@
       nextVisible
     );
 
-    state.objectDetails = details && details.object ? details : null;
     await loadSelectedSceneObjects();
-    renderObjectList();
-    await syncPageHighlight();
+
+    if (state.selectedObjectPath === objectPath) {
+      state.objectDetails = details && details.object ? details : null;
+      renderObjectList();
+      await syncPageHighlight();
+    } else if (state.selectedObjectPath) {
+      renderObjectList();
+    }
+
     setStatus((nextVisible ? "Showed " : "Hid ") + objectPath, false);
   }
 
   function isEditableInspectorTarget(target) {
-    return !!(target && target.closest(".inline-inspector-control-wrap"));
+    return !!(target && target.closest(".inline-inspector-control"));
   }
 
   async function updateObjectProperty(objectPath, property, rawValue, valueType) {
@@ -857,17 +1183,26 @@
 
     state.objectDetails = result && result.object ? result : null;
     await loadSelectedSceneObjects();
-    renderObjectList();
     await syncPageHighlight();
     setStatus("Updated " + property + " on " + objectPath, false);
   }
 
   async function outlineObject(objectPath) {
-    if (state.selectedObjectPath !== objectPath) {
-      await selectObject(objectPath);
+    rememberObjectListScroll();
+
+    if (isObjectOutlined(state.selectedSceneKey, objectPath)) {
+      state.outlinedSceneKey = null;
+      state.outlinedObjectPath = null;
+      renderObjectList();
+      await window.PhaserBridge.clearHighlight();
+      setStatus("Hid outline for " + objectPath, false);
+      return;
     }
 
-    await window.PhaserBridge.highlightObject(state.selectedSceneKey, objectPath);
+    state.outlinedSceneKey = state.selectedSceneKey;
+    state.outlinedObjectPath = objectPath;
+    renderObjectList();
+    await syncPageHighlight();
     setStatus("Outlined object " + objectPath + " on the page", false);
   }
 
@@ -900,12 +1235,23 @@
     if (event.target === elements.objectFilter || isEditableInspectorTarget(event.target)) {
       if (event.key === "Enter" && event.target.dataset && event.target.dataset.editKey) {
         event.preventDefault();
-        await updateObjectProperty(
-          event.target.dataset.objectPath,
-          event.target.dataset.editKey,
-          event.target.type === "checkbox" ? event.target.checked : event.target.value,
-          event.target.type
-        );
+        await commitInspectorControlValue(event.target, { preserveFocus: true });
+      }
+
+      if (
+        (event.key === "ArrowUp" || event.key === "ArrowDown") &&
+        event.target &&
+        event.target.type === "number" &&
+        event.target.dataset &&
+        event.target.dataset.editKey
+      ) {
+        var control = event.target;
+
+        window.setTimeout(function () {
+          commitInspectorControlValue(control, { preserveFocus: true }).catch(function (error) {
+            setStatus(error.message || "Failed to update object property", true);
+          });
+        }, 0);
       }
 
       return;
@@ -993,6 +1339,8 @@
 
     state.selectedSceneKey = sceneKey;
     state.selectedObjectPath = null;
+    state.outlinedSceneKey = null;
+    state.outlinedObjectPath = null;
     state.objectDetails = null;
     state.expandedPaths = {};
     renderSceneList();
@@ -1047,6 +1395,11 @@
       }
 
       try {
+        if (actionName === "info") {
+          await toggleObjectSelection(actionPath);
+          return;
+        }
+
         if (actionName === "outline") {
           await outlineObject(actionPath);
           return;
@@ -1062,23 +1415,7 @@
       return;
     }
 
-    var row = event.target.closest(".tree-row-select");
-
-    if (!row) {
-      return;
-    }
-
-    var objectPath = row.dataset.objectPath;
-
-    if (!objectPath) {
-      return;
-    }
-
-    try {
-      await selectObject(objectPath);
-    } catch (error) {
-      setStatus(error.message || "Failed to load object details", true);
-    }
+    return;
   }
 
   async function handleInspectorControlChange(event) {
@@ -1089,12 +1426,7 @@
     }
 
     try {
-      await updateObjectProperty(
-        control.dataset.objectPath,
-        control.dataset.editKey,
-        control.type === "checkbox" ? control.checked : control.value,
-        control.type
-      );
+      await commitInspectorControlValue(control, { preserveFocus: true });
     } catch (error) {
       setStatus(error.message || "Failed to update object property", true);
     }
@@ -1104,7 +1436,7 @@
     var enable = !state.pickModeEnabled;
 
     try {
-      var result = await window.PhaserBridge.setPickMode(state.selectedSceneKey, enable);
+      var result = await window.PhaserBridge.setPickMode(null, enable);
       state.pickModeEnabled = !!result.pickModeEnabled;
       renderToolbarButtons();
       setStatus(
@@ -1150,6 +1482,10 @@
       refreshData({ preserveSelection: true });
     });
 
+    elements.gameInfoToggle.addEventListener("click", function () {
+      state.gameInfoExpanded = !state.gameInfoExpanded;
+      renderGameInfoVisibility();
+    });
     elements.pickButton.addEventListener("click", togglePickMode);
     elements.sceneList.addEventListener("click", handleSceneClick);
     elements.objectList.addEventListener("click", handleObjectClick);

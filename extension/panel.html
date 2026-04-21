@@ -15,6 +15,15 @@
         </div>
         <div class="toolbar-actions">
           <button id="pick-button" class="secondary-button" type="button">Pick on page</button>
+          <button
+            id="game-info-toggle"
+            class="section-toggle-button"
+            type="button"
+            aria-expanded="false"
+            aria-controls="game-info-card"
+          >
+            Show game info
+          </button>
           <button id="refresh-button" class="refresh-button" type="button">Refresh</button>
         </div>
       </header>
@@ -26,32 +35,43 @@
         </section>
 
         <div id="content" class="content hidden">
-          <section class="panel-card">
-            <div class="section-heading">
-              <h2>Game Info</h2>
+          <section id="game-info-card" class="panel-card hidden">
+            <div class="game-info-rows">
+              <div class="game-info-row game-info-row-summary">
+                <div class="game-info-item">
+                  <span class="game-info-title">Game Info</span>
+                </div>
+                <div class="game-info-item game-info-item-detected">
+                  <span class="game-info-label">Phaser</span>
+                  <span
+                    id="game-detected"
+                    class="detection-light is-unknown"
+                    role="status"
+                    aria-label="Phaser detection unknown"
+                  ></span>
+                </div>
+              </div>
+              <div class="game-info-row game-info-row-pairs">
+                <div class="game-info-item">
+                  <span class="game-info-label">Width</span>
+                  <span id="game-width" class="game-info-value">-</span>
+                </div>
+                <div class="game-info-item">
+                  <span class="game-info-label">Renderer</span>
+                  <span id="game-renderer" class="game-info-value">-</span>
+                </div>
+              </div>
+              <div class="game-info-row game-info-row-pairs">
+                <div class="game-info-item">
+                  <span class="game-info-label">Height</span>
+                  <span id="game-height" class="game-info-value">-</span>
+                </div>
+                <div class="game-info-item">
+                  <span class="game-info-label">Scenes</span>
+                  <span id="scene-count" class="game-info-value">-</span>
+                </div>
+              </div>
             </div>
-            <dl class="info-grid">
-              <div class="info-row">
-                <dt>Phaser detected</dt>
-                <dd id="game-detected">-</dd>
-              </div>
-              <div class="info-row">
-                <dt>Width</dt>
-                <dd id="game-width">-</dd>
-              </div>
-              <div class="info-row">
-                <dt>Height</dt>
-                <dd id="game-height">-</dd>
-              </div>
-              <div class="info-row">
-                <dt>Renderer</dt>
-                <dd id="game-renderer">-</dd>
-              </div>
-              <div class="info-row">
-                <dt>Scene count</dt>
-                <dd id="scene-count">-</dd>
-              </div>
-            </dl>
           </section>
 
           <div class="panel-grid">

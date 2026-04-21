@@ -540,6 +540,146 @@
       };
     }
 
+    function getSceneCameras(scene) {
+      if (!scene || !scene.cameras) {
+        return [];
+      }
+
+      if (Array.isArray(scene.cameras.cameras)) {
+        return scene.cameras.cameras.filter(function (camera) {
+          return !!camera && camera.visible !== false;
+        });
+      }
+
+      if (scene.cameras.main) {
+        return [scene.cameras.main];
+      }
+
+      return [];
+    }
+
+    function cameraContainsPoint(camera, x, y) {
+      if (!camera) {
+        return true;
+      }
+
+      var cameraX = toNumber(camera.x) || 0;
+      var cameraY = toNumber(camera.y) || 0;
+      var cameraWidth = toNumber(camera.width);
+      var cameraHeight = toNumber(camera.height);
+
+      if (!cameraWidth || !cameraHeight) {
+        return true;
+      }
+
+      return x >= cameraX && x <= cameraX + cameraWidth && y >= cameraY && y <= cameraY + cameraHeight;
+    }
+
+    function canRenderToCamera(displayObject, camera) {
+      if (!displayObject || !camera) {
+        return true;
+      }
+
+      if (typeof displayObject.willRender === "function") {
+        try {
+          return !!displayObject.willRender(camera);
+        } catch (error) {
+          // Ignore runtime-specific render checks and fall back below.
+        }
+      }
+
+      if (typeof displayObject.cameraFilter === "number" && typeof camera.id === "number") {
+        return (displayObject.cameraFilter & camera.id) === 0;
+      }
+
+      return true;
+    }
+
+    function getWorldPointForCamera(camera, x, y) {
+      if (!camera) {
+        return { x: x, y: y };
+      }
+
+      if (typeof camera.getWorldPoint === "function") {
+        try {
+          var worldPoint = camera.getWorldPoint(x, y);
+
+          if (worldPoint && isFiniteNumber(worldPoint.x) && isFiniteNumber(worldPoint.y)) {
+            return {
+              x: worldPoint.x,
+              y: worldPoint.y
+            };
+          }
+        } catch (error) {
+          // Ignore and fall back to a simple camera transform.
+        }
+      }
+
+      var cameraX = toNumber(camera.x) || 0;
+      var cameraY = toNumber(camera.y) || 0;
+      var scrollX = toNumber(camera.scrollX) || 0;
+      var scrollY = toNumber(camera.scrollY) || 0;
+      var zoomX = toNumber(camera.zoomX) || toNumber(camera.zoom) || 1;
+      var zoomY = toNumber(camera.zoomY) || toNumber(camera.zoom) || 1;
+
+      return {
+        x: scrollX + (x - cameraX) / zoomX,
+        y: scrollY + (y - cameraY) / zoomY
+      };
+    }
+
+    function getHitTestPointsForScene(scene, pointX, pointY) {
+      var cameras = getSceneCameras(scene);
+      var points = [];
+
+      if (cameras.length === 0) {
+        return [{ camera: null, x: pointX, y: pointY }];
+      }
+
+      for (var index = cameras.length - 1; index >= 0; index -= 1) {
+        var camera = cameras[index];
+
+        if (!cameraContainsPoint(camera, pointX, pointY)) {
+          continue;
+        }
+
+        var worldPoint = getWorldPointForCamera(camera, pointX, pointY);
+        points.push({
+          camera: camera,
+          x: worldPoint.x,
+          y: worldPoint.y
+        });
+      }
+
+      if (points.length === 0) {
+        points.push({ camera: null, x: pointX, y: pointY });
+      }
+
+      return points;
+    }
+
+    function objectContainsPoint(displayObject, hitTestPoints) {
+      var bounds = getObjectBounds(displayObject);
+
+      if (!bounds) {
+        return false;
+      }
+
+      for (var index = 0; index < hitTestPoints.length; index += 1) {
+        var hitTestPoint = hitTestPoints[index];
+
+        if (!canRenderToCamera(displayObject, hitTestPoint.camera)) {
+          continue;
+        }
+
+        if (pointInBounds(bounds, hitTestPoint.x, hitTestPoint.y)) {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
     function ensureOverlayInfrastructure() {
       var registry = getRegistry();
 
@@ -602,12 +742,12 @@
       }
     }
 
-    function findTopmostObjectInList(objects, pointX, pointY, parentPathSegments) {
+    function findTopmostObjectInList(objects, hitTestPoints, parentPathSegments) {
       for (var index = objects.length - 1; index >= 0; index -= 1) {
         var displayObject = objects[index];
         var pathSegments = parentPathSegments.concat(index);
         var children = getObjectChildren(displayObject);
-        var childMatch = findTopmostObjectInList(children, pointX, pointY, pathSegments);
+        var childMatch = findTopmostObjectInList(children, hitTestPoints, pathSegments);
 
         if (childMatch) {
           return childMatch;
@@ -617,7 +757,7 @@
           continue;
         }
 
-        if (pointInBounds(getObjectBounds(displayObject), pointX, pointY)) {
+        if (objectContainsPoint(displayObject, hitTestPoints)) {
           return {
             sceneKey: null,
             objectPath: pathToString(pathSegments)
@@ -643,7 +783,8 @@
 
       for (var sceneIndex = scenes.length - 1; sceneIndex >= 0; sceneIndex -= 1) {
         var scene = scenes[sceneIndex];
-        var match = findTopmostObjectInList(getDisplayList(scene), pointX, pointY, []);
+        var hitTestPoints = getHitTestPointsForScene(scene, pointX, pointY);
+        var match = findTopmostObjectInList(getDisplayList(scene), hitTestPoints, []);
 
         if (match) {
           match.sceneKey = scene.sys && scene.sys.settings ? scene.sys.settings.key : null;
