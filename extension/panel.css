@@ -10,7 +10,7 @@
   --accent: #2f6feb;
   --accent-soft: rgba(47, 111, 235, 0.14);
   --danger: #c62828;
-  --shadow: 0 10px 24px rgba(31, 35, 40, 0.08);
+  --shadow: 0 6px 16px rgba(31, 35, 40, 0.05);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -25,7 +25,7 @@
     --accent: #7cb3ff;
     --accent-soft: rgba(124, 179, 255, 0.2);
     --danger: #ff8a80;
-    --shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+    --shadow: 0 8px 20px rgba(0, 0, 0, 0.18);
   }
 }
 
@@ -303,14 +303,14 @@ button {
   background: #2e7d32;
   box-shadow:
     0 0 0 1px color-mix(in srgb, #2e7d32 50%, transparent),
-    0 0 10px color-mix(in srgb, #2e7d32 32%, transparent);
+    0 0 6px color-mix(in srgb, #2e7d32 20%, transparent);
 }
 
 .detection-light.is-missing {
   background: #c62828;
   box-shadow:
     0 0 0 1px color-mix(in srgb, #c62828 50%, transparent),
-    0 0 10px color-mix(in srgb, #c62828 28%, transparent);
+    0 0 6px color-mix(in srgb, #c62828 18%, transparent);
 }
 
 .list {
@@ -381,13 +381,13 @@ button {
     color-mix(in srgb, var(--panel) 94%, hsl(var(--branch-h, 210) 30% 24% / 0.1)) 24px,
     transparent 100%
   );
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, hsl(var(--branch-h, 210) 24% 42% / 0.18) 55%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, hsl(var(--branch-h, 210) 24% 42% / 0.12) 55%, transparent);
 }
 
 .tree-row.has-children {
   box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, hsl(var(--branch-h, 210) 30% 44% / 0.24) 62%, transparent),
-    inset 0 0 0 999px color-mix(in srgb, hsl(var(--branch-h, 210) 32% 24% / 0.04) 100%, transparent);
+    inset 0 0 0 1px color-mix(in srgb, hsl(var(--branch-h, 210) 30% 44% / 0.18) 62%, transparent),
+    inset 0 0 0 999px color-mix(in srgb, hsl(var(--branch-h, 210) 32% 24% / 0.025) 100%, transparent);
 }
 
 .tree-row.has-children.is-expanded {
@@ -410,7 +410,7 @@ button {
 .tree-row.selected {
   border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   background: color-mix(in srgb, var(--accent-soft) 82%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 .tree-row:hover {
