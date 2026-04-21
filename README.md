@@ -44,6 +44,17 @@ Phaser DevTools is a Chrome DevTools extension that adds a dedicated `Phaser` pa
 
 After publication, install directly from the Chrome Web Store listing (link to be added here).
 
+## Publish Checklist (Chrome Web Store)
+
+1. Confirm `extension/manifest.json` version is bumped for this release.
+2. Build a release zip from the `extension/` folder contents (not the parent folder):
+   - `cd extension && zip -r ../phaser-devtools-vX.Y.Z.zip .`
+3. In Chrome Web Store Developer Dashboard, upload the zip.
+4. Fill listing fields using `docs/chrome-web-store-listing.md`.
+5. Set Support URL and Privacy Policy URL (use `docs/privacy-policy.md` content on a public URL).
+6. Complete permissions/data-use disclosures.
+7. Add screenshots and submit for review.
+
 ## Current Constraints
 
 - Detection relies on heuristics plus an early hook. If you reload the extension after the page starts, refresh the page so the hook runs before the game is created.
