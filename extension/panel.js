@@ -1,9 +1,13 @@
 (function () {
   var AUTO_REFRESH_COOLDOWN_MS = 1200;
   var PICK_POLL_INTERVAL_MS = 500;
+  var SCENE_TELEMETRY_POLL_INTERVAL_MS = 250;
+  var FPS_HISTORY_LIMIT = 60;
+  var INSPECTOR_TABS = ["displayObjects", "state", "load", "camera", "fps"];
 
   var state = {
     snapshot: null,
+    sceneInspector: null,
     sceneObjects: [],
     objectDetails: null,
     selectedSceneKey: null,
@@ -17,10 +21,14 @@
     lastRefreshAt: 0,
     sceneRequestId: 0,
     inspectorRequestId: 0,
+    sceneInspectorRequestId: 0,
     pickModeEnabled: false,
     gameInfoExpanded: false,
+    activeInspectorTab: "displayObjects",
     pendingInspectorFocus: null,
-    pendingObjectListScrollTop: null
+    pendingCameraFocus: null,
+    pendingObjectListScrollTop: null,
+    fpsHistoryByScene: {}
   };
 
   var elements = {};
@@ -39,10 +47,29 @@
     elements.gameInfoToggle = document.getElementById("game-info-toggle");
     elements.gameInfoCard = document.getElementById("game-info-card");
     elements.sceneList = document.getElementById("scene-list");
+    elements.sceneInspectorTitle = document.getElementById("scene-inspector-title");
+    elements.sceneInspectorStatus = document.getElementById("scene-inspector-status");
+    elements.sceneInspectorHeader = document.getElementById("scene-inspector-header");
+    elements.selectedSceneName = document.getElementById("selected-scene-name");
+    elements.selectedScenePills = document.getElementById("selected-scene-pills");
+    elements.selectedSceneMeta = document.getElementById("selected-scene-meta");
+    elements.inspectorTabs = document.getElementById("inspector-tabs");
     elements.objectList = document.getElementById("object-list");
     elements.objectListTitle = document.getElementById("object-list-title");
     elements.objectFilter = document.getElementById("object-filter");
     elements.breadcrumbs = document.getElementById("breadcrumbs");
+    elements.statePanelContent = document.getElementById("state-panel-content");
+    elements.loadPanelContent = document.getElementById("load-panel-content");
+    elements.cameraPanelContent = document.getElementById("camera-panel-content");
+    elements.fpsPanelContent = document.getElementById("fps-panel-content");
+
+    elements.tabButtons = {};
+    elements.tabPanels = {};
+
+    INSPECTOR_TABS.forEach(function (tabName) {
+      elements.tabButtons[tabName] = document.getElementById("tab-button-" + tabName);
+      elements.tabPanels[tabName] = document.getElementById("tab-panel-" + tabName);
+    });
   }
 
   function setStatus(message, isError) {
@@ -58,12 +85,14 @@
     return String(value);
   }
 
-  function formatNumber(value) {
+  function formatNumber(value, digits) {
+    var precision = typeof digits === "number" ? digits : 2;
+
     if (typeof value !== "number" || !Number.isFinite(value)) {
       return "-";
     }
 
-    return String(Math.round(value * 100) / 100);
+    return String(Math.round(value * Math.pow(10, precision)) / Math.pow(10, precision));
   }
 
   function formatBoolean(value) {
@@ -76,6 +105,14 @@
     }
 
     return "-";
+  }
+
+  function formatPercent(value) {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      return "-";
+    }
+
+    return String(Math.round(value * 1000) / 10) + "%";
   }
 
   function createPill(text, variant) {
@@ -307,20 +344,339 @@
     return guides;
   }
 
-  function isAncestorPath(ancestorPath, targetPath) {
-    if (!ancestorPath || !targetPath || ancestorPath === targetPath) {
-      return false;
-    }
+  function getSelectedSceneSummary() {
+    var scenes = (state.snapshot && state.snapshot.scenes) || [];
 
-    return targetPath.indexOf(ancestorPath + ".") === 0;
+    return (
+      scenes.find(function (scene) {
+        return scene.key === state.selectedSceneKey;
+      }) || null
+    );
   }
 
-  function isDescendantPath(descendantPath, targetPath) {
-    if (!descendantPath || !targetPath || descendantPath === targetPath) {
+  function getSelectedSceneLabel() {
+    return state.selectedSceneKey || "No scene selected";
+  }
+
+  function getSelectedSceneInspectorState() {
+    if (state.sceneInspector && state.sceneInspector.state) {
+      return state.sceneInspector.state;
+    }
+
+    return getSelectedSceneSummary();
+  }
+
+  function getSelectedSceneLoad() {
+    if (state.sceneInspector && state.sceneInspector.load) {
+      return state.sceneInspector.load;
+    }
+
+    var selectedScene = getSelectedSceneSummary();
+    return selectedScene ? selectedScene.load : null;
+  }
+
+  function getSelectedSceneCamera() {
+    if (state.sceneInspector && state.sceneInspector.camera) {
+      return state.sceneInspector.camera;
+    }
+
+    var selectedScene = getSelectedSceneSummary();
+    return selectedScene ? selectedScene.camera : null;
+  }
+
+  function getFpsMetrics() {
+    if (state.sceneInspector && state.sceneInspector.fps) {
+      return state.sceneInspector.fps;
+    }
+
+    return state.snapshot && state.snapshot.game ? state.snapshot.game.fps : null;
+  }
+
+  function trimFpsHistory() {
+    var validKeys = {};
+    var scenes = (state.snapshot && state.snapshot.scenes) || [];
+
+    scenes.forEach(function (scene) {
+      validKeys[scene.key] = true;
+    });
+
+    Object.keys(state.fpsHistoryByScene).forEach(function (sceneKey) {
+      if (!validKeys[sceneKey]) {
+        delete state.fpsHistoryByScene[sceneKey];
+      }
+    });
+  }
+
+  function recordFpsSample(sceneKey, fpsMetrics) {
+    if (!sceneKey || !fpsMetrics || typeof fpsMetrics.actualFps !== "number" || !Number.isFinite(fpsMetrics.actualFps)) {
+      return;
+    }
+
+    if (!state.fpsHistoryByScene[sceneKey]) {
+      state.fpsHistoryByScene[sceneKey] = [];
+    }
+
+    state.fpsHistoryByScene[sceneKey].push(fpsMetrics.actualFps);
+
+    if (state.fpsHistoryByScene[sceneKey].length > FPS_HISTORY_LIMIT) {
+      state.fpsHistoryByScene[sceneKey].shift();
+    }
+  }
+
+  function syncSceneInspectorFromSnapshot() {
+    var selectedScene = getSelectedSceneSummary();
+
+    if (!selectedScene) {
+      state.sceneInspector = null;
+      return;
+    }
+
+    state.sceneInspector = {
+      sceneKey: selectedScene.key,
+      state: selectedScene,
+      load: selectedScene.load,
+      camera: selectedScene.camera,
+      fps: state.snapshot && state.snapshot.game ? state.snapshot.game.fps : null
+    };
+
+    recordFpsSample(selectedScene.key, state.sceneInspector.fps);
+  }
+
+  function applySceneInspectorData(inspectorData) {
+    if (!inspectorData || inspectorData.sceneKey !== state.selectedSceneKey) {
+      return;
+    }
+
+    state.sceneInspector = inspectorData;
+
+    var selectedScene = getSelectedSceneSummary();
+
+    if (selectedScene && inspectorData.state) {
+      Object.keys(inspectorData.state).forEach(function (key) {
+        selectedScene[key] = inspectorData.state[key];
+      });
+    }
+
+    if (selectedScene && inspectorData.load) {
+      selectedScene.load = inspectorData.load;
+    }
+
+    if (selectedScene && inspectorData.camera) {
+      selectedScene.camera = inspectorData.camera;
+    }
+
+    if (state.snapshot && state.snapshot.game && inspectorData.fps) {
+      state.snapshot.game.fps = inspectorData.fps;
+    }
+
+    recordFpsSample(inspectorData.sceneKey, inspectorData.fps);
+  }
+
+  function clearDetectedState() {
+    state.selectedSceneKey = null;
+    state.selectedObjectPath = null;
+    state.outlinedSceneKey = null;
+    state.outlinedObjectPath = null;
+    state.sceneInspector = null;
+    state.sceneObjects = [];
+    state.objectDetails = null;
+    state.expandedPaths = {};
+    state.fpsHistoryByScene = {};
+  }
+
+  function applySnapshotState(snapshot, options) {
+    var preserveSelection = !options || options.preserveSelection !== false;
+
+    state.snapshot = snapshot;
+    state.pickModeEnabled = !!(snapshot && snapshot.pickModeEnabled);
+
+    if (!snapshot || !snapshot.detected) {
+      clearDetectedState();
       return false;
     }
 
-    return descendantPath.indexOf(targetPath + ".") === 0;
+    var scenes = snapshot.scenes || [];
+    var sceneStillExists = scenes.some(function (scene) {
+      return scene.key === state.selectedSceneKey;
+    });
+
+    if (!preserveSelection || !sceneStillExists) {
+      state.selectedSceneKey = scenes.length > 0 ? scenes[0].key : null;
+      state.selectedObjectPath = null;
+      state.objectDetails = null;
+      state.outlinedSceneKey = null;
+      state.outlinedObjectPath = null;
+      state.expandedPaths = {};
+    }
+
+    trimFpsHistory();
+    syncSceneInspectorFromSnapshot();
+    return true;
+  }
+
+  function renderSceneList() {
+    elements.sceneList.innerHTML = "";
+
+    var scenes = (state.snapshot && state.snapshot.scenes) || [];
+
+    if (scenes.length === 0) {
+      elements.sceneList.innerHTML = '<p class="placeholder">No scenes found.</p>';
+      return;
+    }
+
+    var fragment = document.createDocumentFragment();
+
+    scenes.forEach(function (scene) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "list-row scene-row" + (scene.key === state.selectedSceneKey ? " selected" : "");
+      button.dataset.sceneKey = scene.key;
+
+      var title = document.createElement("div");
+      title.className = "list-row-title";
+
+      var name = document.createElement("span");
+      name.textContent = scene.key;
+      title.appendChild(name);
+      title.appendChild(createPill(scene.active ? "active" : "inactive"));
+
+      var meta = document.createElement("div");
+      meta.className = "list-row-meta";
+      meta.innerHTML =
+        "<span>Visible: " +
+        formatBoolean(scene.visible) +
+        "</span><span>Status: " +
+        formatValue(scene.statusLabel) +
+        "</span>";
+
+      button.appendChild(title);
+      button.appendChild(meta);
+      fragment.appendChild(button);
+    });
+
+    elements.sceneList.appendChild(fragment);
+  }
+
+  function renderBreadcrumbs() {
+    elements.breadcrumbs.innerHTML = "";
+
+    if (!state.selectedObjectPath) {
+      elements.breadcrumbs.innerHTML = '<span class="breadcrumb-empty">No selection</span>';
+      return;
+    }
+
+    var segments = getPathSegments(state.selectedObjectPath);
+    var fragment = document.createDocumentFragment();
+    var currentPath = "";
+
+    segments.forEach(function (segment, index) {
+      currentPath = currentPath ? currentPath + "." + segment : segment;
+
+      var displayObject = getObjectByPath(currentPath);
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "breadcrumb-button";
+      button.dataset.breadcrumbPath = currentPath;
+      button.textContent =
+        (displayObject && (displayObject.name || displayObject.type)) || currentPath;
+      fragment.appendChild(button);
+
+      if (index < segments.length - 1) {
+        var separator = document.createElement("span");
+        separator.className = "breadcrumb-separator";
+        separator.textContent = "/";
+        fragment.appendChild(separator);
+      }
+    });
+
+    elements.breadcrumbs.appendChild(fragment);
+  }
+
+  function renderInlineInspector(row, details) {
+    var inspector = document.createElement("div");
+    inspector.className = "inline-inspector";
+
+    if (!details || !details.object) {
+      inspector.innerHTML = '<p class="placeholder">Loading object details...</p>';
+      row.appendChild(inspector);
+      return;
+    }
+
+    var objectDetails = details.object;
+    var editableFields = [
+      ["X", "x", objectDetails.x, "number", "1"],
+      ["Y", "y", objectDetails.y, "number", "1"],
+      ["Scale X", "scaleX", objectDetails.scaleX, "number", "1"],
+      ["Scale Y", "scaleY", objectDetails.scaleY, "number", "1"],
+      ["Alpha", "alpha", objectDetails.alpha, "number", "1"],
+      ["Rotation", "rotation", objectDetails.rotation, "number", "1"],
+      ["Visible", "visible", objectDetails.visible, "checkbox", null]
+    ];
+    var readonlyFields = [
+      ["Name", objectDetails.name],
+      ["Type", objectDetails.type],
+      ["Path", objectDetails.path],
+      ["Texture", objectDetails.textureKey],
+      ["Children", formatValue(objectDetails.childCount)]
+    ];
+
+    var editableGroup = document.createElement("div");
+    editableGroup.className = "inline-inspector-group";
+
+    editableFields.forEach(function (field) {
+      var item = document.createElement("label");
+      item.className = "inline-inspector-item is-editable";
+
+      var label = document.createElement("span");
+      label.className = "inline-inspector-label";
+      label.textContent = field[0];
+
+      var controlWrap = document.createElement("span");
+      controlWrap.className = "inline-inspector-control-wrap";
+
+      var control = document.createElement("input");
+      control.className = "inline-inspector-control";
+      control.dataset.editKey = field[1];
+      control.dataset.objectPath = objectDetails.path;
+
+      if (field[3] === "checkbox") {
+        control.type = "checkbox";
+        control.checked = field[2] === true;
+      } else {
+        control.type = "number";
+        control.step = field[4];
+        control.value = typeof field[2] === "number" && Number.isFinite(field[2]) ? String(field[2]) : "";
+      }
+
+      controlWrap.appendChild(control);
+      item.appendChild(label);
+      item.appendChild(controlWrap);
+      editableGroup.appendChild(item);
+    });
+
+    var readonlyGroup = document.createElement("div");
+    readonlyGroup.className = "inline-inspector-group is-readonly";
+
+    readonlyFields.forEach(function (field) {
+      var item = document.createElement("div");
+      item.className = "inline-inspector-item";
+
+      var label = document.createElement("span");
+      label.className = "inline-inspector-label";
+      label.textContent = field[0];
+
+      var value = document.createElement("span");
+      value.className = "inline-inspector-value";
+      value.textContent = formatValue(field[1]);
+
+      item.appendChild(label);
+      item.appendChild(value);
+      readonlyGroup.appendChild(item);
+    });
+
+    inspector.appendChild(editableGroup);
+    inspector.appendChild(readonlyGroup);
+    row.appendChild(inspector);
   }
 
   function getObjectByPath(objectPath) {
@@ -456,171 +812,6 @@
     });
   }
 
-  function renderSceneList() {
-    elements.sceneList.innerHTML = "";
-
-    var scenes = (state.snapshot && state.snapshot.scenes) || [];
-
-    if (scenes.length === 0) {
-      elements.sceneList.innerHTML = '<p class="placeholder">No scenes found.</p>';
-      return;
-    }
-
-    var fragment = document.createDocumentFragment();
-
-    scenes.forEach(function (scene) {
-      var button = document.createElement("button");
-      button.type = "button";
-      button.className = "list-row scene-row" + (scene.key === state.selectedSceneKey ? " selected" : "");
-      button.dataset.sceneKey = scene.key;
-
-      var title = document.createElement("div");
-      title.className = "list-row-title";
-
-      var name = document.createElement("span");
-      name.textContent = scene.key;
-      title.appendChild(name);
-      title.appendChild(createPill(scene.active ? "active" : "inactive"));
-
-      var meta = document.createElement("div");
-      meta.className = "list-row-meta";
-      meta.innerHTML =
-        "<span>Visible: " +
-        formatBoolean(scene.visible) +
-        "</span><span>Active: " +
-        formatBoolean(scene.active) +
-        "</span>";
-
-      button.appendChild(title);
-      button.appendChild(meta);
-      fragment.appendChild(button);
-    });
-
-    elements.sceneList.appendChild(fragment);
-  }
-
-  function renderBreadcrumbs() {
-    elements.breadcrumbs.innerHTML = "";
-
-    if (!state.selectedObjectPath) {
-      elements.breadcrumbs.innerHTML = '<span class="breadcrumb-empty">No selection</span>';
-      return;
-    }
-
-    var segments = getPathSegments(state.selectedObjectPath);
-    var fragment = document.createDocumentFragment();
-    var currentPath = "";
-
-    segments.forEach(function (segment, index) {
-      currentPath = currentPath ? currentPath + "." + segment : segment;
-
-      var displayObject = getObjectByPath(currentPath);
-      var button = document.createElement("button");
-      button.type = "button";
-      button.className = "breadcrumb-button";
-      button.dataset.breadcrumbPath = currentPath;
-      button.textContent =
-        (displayObject && (displayObject.name || displayObject.type)) || currentPath;
-      fragment.appendChild(button);
-
-      if (index < segments.length - 1) {
-        var separator = document.createElement("span");
-        separator.className = "breadcrumb-separator";
-        separator.textContent = "/";
-        fragment.appendChild(separator);
-      }
-    });
-
-    elements.breadcrumbs.appendChild(fragment);
-  }
-
-  function renderInlineInspector(row, details) {
-    var inspector = document.createElement("div");
-    inspector.className = "inline-inspector";
-
-    if (!details || !details.object) {
-      inspector.innerHTML = '<p class="placeholder">Loading object details...</p>';
-      row.appendChild(inspector);
-      return;
-    }
-
-    var objectDetails = details.object;
-    var editableFields = [
-      ["X", "x", objectDetails.x, "number", "1"],
-      ["Y", "y", objectDetails.y, "number", "1"],
-      ["Scale X", "scaleX", objectDetails.scaleX, "number", "1"],
-      ["Scale Y", "scaleY", objectDetails.scaleY, "number", "1"],
-      ["Alpha", "alpha", objectDetails.alpha, "number", "1"],
-      ["Rotation", "rotation", objectDetails.rotation, "number", "1"],
-      ["Visible", "visible", objectDetails.visible, "checkbox", null]
-    ];
-    var readonlyFields = [
-      ["Name", objectDetails.name],
-      ["Type", objectDetails.type],
-      ["Path", objectDetails.path],
-      ["Texture", objectDetails.textureKey],
-      ["Children", formatValue(objectDetails.childCount)]
-    ];
-
-    var editableGroup = document.createElement("div");
-    editableGroup.className = "inline-inspector-group";
-
-    editableFields.forEach(function (field) {
-      var item = document.createElement("label");
-      item.className = "inline-inspector-item is-editable";
-
-      var label = document.createElement("span");
-      label.className = "inline-inspector-label";
-      label.textContent = field[0];
-
-      var controlWrap = document.createElement("span");
-      controlWrap.className = "inline-inspector-control-wrap";
-
-      var control = document.createElement("input");
-      control.className = "inline-inspector-control";
-      control.dataset.editKey = field[1];
-      control.dataset.objectPath = objectDetails.path;
-
-      if (field[3] === "checkbox") {
-        control.type = "checkbox";
-        control.checked = field[2] === true;
-      } else {
-        control.type = "number";
-        control.step = field[4];
-        control.value = typeof field[2] === "number" && Number.isFinite(field[2]) ? String(field[2]) : "";
-      }
-
-      controlWrap.appendChild(control);
-      item.appendChild(label);
-      item.appendChild(controlWrap);
-      editableGroup.appendChild(item);
-    });
-
-    var readonlyGroup = document.createElement("div");
-    readonlyGroup.className = "inline-inspector-group is-readonly";
-
-    readonlyFields.forEach(function (field) {
-      var item = document.createElement("div");
-      item.className = "inline-inspector-item";
-
-      var label = document.createElement("span");
-      label.className = "inline-inspector-label";
-      label.textContent = field[0];
-
-      var value = document.createElement("span");
-      value.className = "inline-inspector-value";
-      value.textContent = formatValue(field[1]);
-
-      item.appendChild(label);
-      item.appendChild(value);
-      readonlyGroup.appendChild(item);
-    });
-
-    inspector.appendChild(editableGroup);
-    inspector.appendChild(readonlyGroup);
-    row.appendChild(inspector);
-  }
-
   function rememberInspectorFocus(objectPath, editKey) {
     if (!objectPath || !editKey) {
       state.pendingInspectorFocus = null;
@@ -676,16 +867,36 @@
     state.pendingInspectorFocus = null;
   }
 
-  async function commitInspectorControlValue(control, options) {
-    if (!control || !control.dataset) {
+  function rememberCameraFocus(property) {
+    state.pendingCameraFocus = property ? { property: property } : null;
+  }
+
+  function restorePendingCameraFocus() {
+    if (!state.pendingCameraFocus || !elements.cameraPanelContent) {
       return;
+    }
+
+    var control = elements.cameraPanelContent.querySelector(
+      '[data-camera-property="' + state.pendingCameraFocus.property + '"]'
+    );
+
+    if (control) {
+      control.focus({ preventScroll: true });
+    }
+
+    state.pendingCameraFocus = null;
+  }
+
+  function commitInspectorControlValue(control, options) {
+    if (!control || !control.dataset) {
+      return Promise.resolve();
     }
 
     if (options && options.preserveFocus) {
       rememberInspectorFocus(control.dataset.objectPath, control.dataset.editKey);
     }
 
-    await updateObjectProperty(
+    return updateObjectProperty(
       control.dataset.objectPath,
       control.dataset.editKey,
       control.type === "checkbox" ? control.checked : control.value,
@@ -890,6 +1101,461 @@
     restorePendingInspectorFocus();
   }
 
+  function createInfoGrid(items) {
+    var grid = document.createElement("div");
+    grid.className = "inspector-info-grid";
+
+    items.forEach(function (item) {
+      var row = document.createElement("div");
+      row.className = "inspector-info-row";
+
+      var label = document.createElement("span");
+      label.className = "inspector-info-label";
+      label.textContent = item[0];
+
+      var value = document.createElement("span");
+      value.className = "inspector-info-value";
+      value.textContent = formatValue(item[1]);
+
+      row.appendChild(label);
+      row.appendChild(value);
+      grid.appendChild(row);
+    });
+
+    return grid;
+  }
+
+  function createPlaceholder(message) {
+    var placeholder = document.createElement("p");
+    placeholder.className = "placeholder";
+    placeholder.textContent = message;
+    return placeholder;
+  }
+
+  function renderSceneInspectorHeader() {
+    var sceneState = getSelectedSceneInspectorState();
+
+    if (!state.selectedSceneKey || !sceneState) {
+      elements.sceneInspectorTitle.textContent = "Select a scene";
+      elements.sceneInspectorStatus.textContent = "No scene selected";
+      elements.selectedSceneName.textContent = "No scene selected";
+      elements.selectedScenePills.innerHTML = "";
+      elements.selectedSceneMeta.innerHTML = "";
+      elements.sceneInspectorHeader.classList.add("is-empty");
+      return;
+    }
+
+    elements.sceneInspectorHeader.classList.remove("is-empty");
+    elements.sceneInspectorTitle.textContent = "";
+    elements.sceneInspectorStatus.textContent = elements.tabButtons[state.activeInspectorTab].textContent;
+    elements.selectedSceneName.textContent = sceneState.key;
+    elements.selectedScenePills.innerHTML = "";
+    elements.selectedSceneMeta.innerHTML = "";
+
+    elements.selectedScenePills.appendChild(
+      createPill(
+        sceneState.active === true ? "active" : sceneState.active === false ? "inactive" : "unknown"
+      )
+    );
+    elements.selectedScenePills.appendChild(
+      createPill(
+        sceneState.visible === true ? "visible" : sceneState.visible === false ? "hidden" : "unknown"
+      )
+    );
+
+    if (sceneState.statusLabel) {
+      elements.selectedScenePills.appendChild(createPill(sceneState.statusLabel.toLowerCase(), "status"));
+    }
+
+    var metaItems = [
+      "Status: " + formatValue(sceneState.statusLabel),
+      "Paused: " + formatBoolean(sceneState.isPaused),
+      "Sleeping: " + formatBoolean(sceneState.isSleeping)
+    ];
+
+    metaItems.forEach(function (text) {
+      var item = document.createElement("span");
+      item.className = "scene-inspector-meta-item";
+      item.textContent = text;
+      elements.selectedSceneMeta.appendChild(item);
+    });
+  }
+
+  function renderInspectorTabs() {
+    INSPECTOR_TABS.forEach(function (tabName) {
+      var isActive = state.activeInspectorTab === tabName;
+      elements.tabButtons[tabName].classList.toggle("is-active", isActive);
+      elements.tabButtons[tabName].setAttribute("aria-selected", isActive ? "true" : "false");
+      elements.tabPanels[tabName].classList.toggle("hidden", !isActive);
+    });
+  }
+
+  function renderStatePanel() {
+    elements.statePanelContent.innerHTML = "";
+
+    var sceneState = getSelectedSceneInspectorState();
+
+    if (!sceneState) {
+      elements.statePanelContent.appendChild(createPlaceholder("Select a scene to inspect its state."));
+      return;
+    }
+
+    var actions = sceneState.sceneActions || {};
+    var actionGrid = document.createElement("div");
+    actionGrid.className = "scene-action-grid";
+
+    ["pause", "resume", "sleep", "wake", "stop", "restart", "remove"].forEach(function (actionName) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "scene-action-button";
+      button.dataset.sceneAction = actionName;
+      button.disabled = !actions[actionName];
+      button.textContent = actionName.charAt(0).toUpperCase() + actionName.slice(1);
+      actionGrid.appendChild(button);
+    });
+
+    elements.statePanelContent.appendChild(actionGrid);
+    elements.statePanelContent.appendChild(
+      createInfoGrid([
+        ["Active", formatBoolean(sceneState.active)],
+        ["Visible", formatBoolean(sceneState.visible)],
+        ["Paused", formatBoolean(sceneState.isPaused)],
+        ["Sleeping", formatBoolean(sceneState.isSleeping)],
+        ["Status", formatValue(sceneState.statusLabel)]
+      ])
+    );
+  }
+
+  function renderLoadPanel() {
+    elements.loadPanelContent.innerHTML = "";
+
+    var load = getSelectedSceneLoad();
+
+    if (!load) {
+      elements.loadPanelContent.appendChild(createPlaceholder("Select a scene to inspect loader metrics."));
+      return;
+    }
+
+    var hasLoadData =
+      load.isLoading === true ||
+      (typeof load.totalToLoad === "number" && load.totalToLoad > 0) ||
+      (typeof load.totalComplete === "number" && load.totalComplete > 0) ||
+      (typeof load.totalFailed === "number" && load.totalFailed > 0);
+
+    var progressCard = document.createElement("div");
+    progressCard.className = "progress-card";
+
+    var progressHeader = document.createElement("div");
+    progressHeader.className = "progress-card-header";
+    progressHeader.innerHTML =
+      "<span>Progress</span><strong>" + formatPercent(load.progress || 0) + "</strong>";
+
+    var progressTrack = document.createElement("div");
+    progressTrack.className = "progress-track";
+
+    var progressFill = document.createElement("div");
+    progressFill.className = "progress-fill";
+    progressFill.style.width = Math.max(0, Math.min(100, (load.progress || 0) * 100)) + "%";
+
+    progressTrack.appendChild(progressFill);
+    progressCard.appendChild(progressHeader);
+    progressCard.appendChild(progressTrack);
+    elements.loadPanelContent.appendChild(progressCard);
+
+    elements.loadPanelContent.appendChild(
+      createInfoGrid([
+        ["Loading", formatBoolean(load.isLoading)],
+        ["totalComplete", formatNumber(load.totalComplete)],
+        ["totalFailed", formatNumber(load.totalFailed)],
+        ["totalToLoad", formatNumber(load.totalToLoad)]
+      ])
+    );
+
+    if (!hasLoadData) {
+      elements.loadPanelContent.appendChild(
+        createPlaceholder("No loader activity is currently reported for this scene.")
+      );
+    }
+  }
+
+  function createCameraGroup(title, fields) {
+    var section = document.createElement("div");
+    section.className = "camera-group";
+
+    var heading = document.createElement("h3");
+    heading.className = "camera-group-title";
+    heading.textContent = title;
+    section.appendChild(heading);
+
+    var grid = document.createElement("div");
+    grid.className = "camera-grid";
+
+    fields.forEach(function (field) {
+      var item = document.createElement(field.editable ? "label" : "div");
+      item.className = "camera-row" + (field.editable ? " is-editable" : "");
+
+      var label = document.createElement("span");
+      label.className = "camera-label";
+      label.textContent = field.label;
+
+      item.appendChild(label);
+
+      if (field.editable) {
+        var controlWrap = document.createElement("span");
+        controlWrap.className = "camera-control-wrap";
+
+        var control = document.createElement("input");
+        control.className = "camera-control";
+        control.dataset.cameraProperty = field.property;
+        control.dataset.valueType = field.type;
+        control.type = field.inputType || field.type;
+
+        if (field.type === "checkbox") {
+          control.checked = field.value === true;
+        } else {
+          control.value = field.value === null || field.value === undefined ? "" : String(field.value);
+        }
+
+        if (field.step) {
+          control.step = field.step;
+        }
+
+        controlWrap.appendChild(control);
+        item.appendChild(controlWrap);
+      } else {
+        var value = document.createElement("span");
+        value.className = "camera-value";
+        value.textContent = formatValue(field.value);
+        item.appendChild(value);
+      }
+
+      grid.appendChild(item);
+    });
+
+    section.appendChild(grid);
+    return section;
+  }
+
+  function createCameraActionGrid(camera) {
+    var actions = (camera && camera.actions) || {};
+    var grid = document.createElement("div");
+    grid.className = "scene-action-grid camera-action-grid";
+
+    [
+      ["fadeIn", "Fade in"],
+      ["fadeOut", "Fade out"],
+      ["flash", "Flash"],
+      ["resetFX", "Reset effects"],
+      ["shake", "Shake"],
+      ["destroy", "Destroy"]
+    ].forEach(function (definition) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "scene-action-button";
+      button.dataset.cameraAction = definition[0];
+      button.disabled = !actions[definition[0]];
+      button.textContent = definition[1];
+      grid.appendChild(button);
+    });
+
+    return grid;
+  }
+
+  function renderCameraPanel() {
+    elements.cameraPanelContent.innerHTML = "";
+
+    var camera = getSelectedSceneCamera();
+
+    if (!camera) {
+      elements.cameraPanelContent.appendChild(createPlaceholder("This scene does not expose a main camera."));
+      return;
+    }
+
+    elements.cameraPanelContent.appendChild(createCameraActionGrid(camera));
+
+    elements.cameraPanelContent.appendChild(
+      createCameraGroup("Editable", [
+        { label: "X", property: "x", value: camera.x, type: "number", step: "1", editable: true },
+        { label: "Y", property: "y", value: camera.y, type: "number", step: "1", editable: true },
+        {
+          label: "Width",
+          property: "width",
+          value: camera.width,
+          type: "number",
+          step: "1",
+          editable: true
+        },
+        {
+          label: "Height",
+          property: "height",
+          value: camera.height,
+          type: "number",
+          step: "1",
+          editable: true
+        },
+        {
+          label: "Scroll X",
+          property: "scrollX",
+          value: camera.scrollX,
+          type: "number",
+          step: "1",
+          editable: true
+        },
+        {
+          label: "Scroll Y",
+          property: "scrollY",
+          value: camera.scrollY,
+          type: "number",
+          step: "1",
+          editable: true
+        },
+        {
+          label: "Zoom",
+          property: "zoom",
+          value: camera.zoom,
+          type: "number",
+          step: "0.1",
+          editable: true
+        },
+        {
+          label: "Rotation",
+          property: "rotation",
+          value: camera.rotation,
+          type: "number",
+          step: "0.01",
+          editable: true
+        },
+        {
+          label: "Round Pixels",
+          property: "roundPixels",
+          value: camera.roundPixels,
+          type: "checkbox",
+          editable: true
+        },
+        {
+          label: "Visible",
+          property: "visible",
+          value: camera.visible,
+          type: "checkbox",
+          editable: true
+        },
+        {
+          label: "Background",
+          property: "backgroundColor",
+          value: typeof camera.backgroundColor === "string" && camera.backgroundColor.charAt(0) === "#"
+            ? camera.backgroundColor
+            : "#000000",
+          type: "color",
+          inputType: "color",
+          editable: true
+        }
+      ])
+    );
+
+    elements.cameraPanelContent.appendChild(
+      createCameraGroup("Read-only", [
+        { label: "Name", value: camera.name },
+        { label: "Alpha", value: formatNumber(camera.alpha) },
+        { label: "Origin X", value: formatNumber(camera.originX) },
+        { label: "Origin Y", value: formatNumber(camera.originY) },
+        { label: "Center X", value: formatNumber(camera.centerX) },
+        { label: "Center Y", value: formatNumber(camera.centerY) },
+        { label: "World X", value: formatNumber(camera.worldViewX) },
+        { label: "World Y", value: formatNumber(camera.worldViewY) },
+        { label: "World Width", value: formatNumber(camera.worldViewWidth) },
+        { label: "World Height", value: formatNumber(camera.worldViewHeight) }
+      ])
+    );
+
+    restorePendingCameraFocus();
+  }
+
+  function createFpsGraph(samples, metrics) {
+    var wrapper = document.createElement("div");
+    wrapper.className = "fps-graph-card";
+
+    var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 320 96");
+    svg.setAttribute("class", "fps-graph");
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", "Frames per second history");
+
+    var topGuide = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    topGuide.setAttribute("x1", "0");
+    topGuide.setAttribute("y1", "12");
+    topGuide.setAttribute("x2", "320");
+    topGuide.setAttribute("y2", "12");
+    topGuide.setAttribute("class", "fps-guide");
+
+    var midGuide = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    midGuide.setAttribute("x1", "0");
+    midGuide.setAttribute("y1", "48");
+    midGuide.setAttribute("x2", "320");
+    midGuide.setAttribute("y2", "48");
+    midGuide.setAttribute("class", "fps-guide");
+
+    var bottomGuide = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    bottomGuide.setAttribute("x1", "0");
+    bottomGuide.setAttribute("y1", "84");
+    bottomGuide.setAttribute("x2", "320");
+    bottomGuide.setAttribute("y2", "84");
+    bottomGuide.setAttribute("class", "fps-guide");
+
+    svg.appendChild(topGuide);
+    svg.appendChild(midGuide);
+    svg.appendChild(bottomGuide);
+
+    var usableSamples = samples.length > 0 ? samples : [metrics && metrics.actualFps ? metrics.actualFps : 0];
+    var maxValue = Math.max(1, Math.max.apply(Math, usableSamples.concat([metrics && metrics.targetFps ? metrics.targetFps : 60])));
+    var points = usableSamples
+      .map(function (sample, index) {
+        var x = usableSamples.length === 1 ? 160 : (320 / Math.max(1, usableSamples.length - 1)) * index;
+        var y = 84 - (Math.max(0, sample) / maxValue) * 72;
+        return x.toFixed(2) + "," + y.toFixed(2);
+      })
+      .join(" ");
+
+    var polyline = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+    polyline.setAttribute("points", points);
+    polyline.setAttribute("class", "fps-line");
+    svg.appendChild(polyline);
+
+    wrapper.appendChild(svg);
+    return wrapper;
+  }
+
+  function renderFpsPanel() {
+    elements.fpsPanelContent.innerHTML = "";
+
+    if (!state.selectedSceneKey) {
+      elements.fpsPanelContent.appendChild(createPlaceholder("Select a scene to inspect FPS data."));
+      return;
+    }
+
+    var metrics = getFpsMetrics() || {};
+    var samples = state.fpsHistoryByScene[state.selectedSceneKey] || [];
+
+    elements.fpsPanelContent.appendChild(createFpsGraph(samples, metrics));
+    elements.fpsPanelContent.appendChild(
+      createInfoGrid([
+        ["actualFps", formatNumber(metrics.actualFps)],
+        ["targetFps", formatNumber(metrics.targetFps)],
+        ["fpsLimit", formatNumber(metrics.fpsLimit)],
+        ["delta", formatNumber(metrics.delta)],
+        ["rawDelta", formatNumber(metrics.rawDelta)]
+      ])
+    );
+  }
+
+  function renderSceneInspectorPanels() {
+    renderSceneInspectorHeader();
+    renderInspectorTabs();
+    renderStatePanel();
+    renderLoadPanel();
+    renderCameraPanel();
+    renderFpsPanel();
+  }
+
   function renderContentVisibility() {
     var detected = !!(state.snapshot && state.snapshot.detected);
 
@@ -902,6 +1568,7 @@
     renderGameInfoVisibility();
     renderGameInfo();
     renderSceneList();
+    renderSceneInspectorPanels();
     renderObjectList();
     renderToolbarButtons();
   }
@@ -910,13 +1577,32 @@
     state.refreshQueued = true;
   }
 
-  async function syncPageHighlight() {
+  function syncPageHighlight() {
     if (!state.outlinedSceneKey || !state.outlinedObjectPath) {
-      await window.PhaserBridge.clearHighlight();
+      return window.PhaserBridge.clearHighlight();
+    }
+
+    return window.PhaserBridge.highlightObject(state.outlinedSceneKey, state.outlinedObjectPath);
+  }
+
+  async function loadSelectedSceneInspector() {
+    if (!state.selectedSceneKey || !state.snapshot || !state.snapshot.detected) {
+      state.sceneInspector = null;
+      renderSceneInspectorPanels();
       return;
     }
 
-    await window.PhaserBridge.highlightObject(state.outlinedSceneKey, state.outlinedObjectPath);
+    var requestId = state.sceneInspectorRequestId + 1;
+    state.sceneInspectorRequestId = requestId;
+
+    var inspectorData = await window.PhaserBridge.getSceneInspector(state.selectedSceneKey);
+
+    if (requestId !== state.sceneInspectorRequestId) {
+      return;
+    }
+
+    applySceneInspectorData(inspectorData);
+    renderSceneInspectorPanels();
   }
 
   async function loadSelectedSceneObjects() {
@@ -973,6 +1659,39 @@
     renderObjectList();
   }
 
+  async function hydrateFromSnapshot(snapshot, options) {
+    var detected = applySnapshotState(snapshot, options);
+    renderAll();
+
+    if (!detected) {
+      return;
+    }
+
+    await loadSelectedSceneObjects();
+
+    if (state.selectedObjectPath !== null) {
+      var selectedObjectStillExists = state.sceneObjects.some(function (displayObject) {
+        return displayObject.path === state.selectedObjectPath;
+      });
+
+      if (!selectedObjectStillExists) {
+        state.selectedObjectPath = null;
+        state.objectDetails = null;
+      }
+    }
+
+    renderObjectList();
+
+    if (state.selectedObjectPath !== null) {
+      await loadSelectedObjectDetails();
+      await syncPageHighlight();
+    } else {
+      await window.PhaserBridge.clearHighlight();
+    }
+
+    await loadSelectedSceneInspector();
+  }
+
   async function refreshData(options) {
     var preserveSelection = !options || options.preserveSelection !== false;
 
@@ -988,54 +1707,12 @@
     setStatus("Refreshing...", false);
 
     try {
-      state.snapshot = await window.PhaserBridge.getGameSnapshot();
-      state.pickModeEnabled = !!state.snapshot.pickModeEnabled;
+      var snapshot = await window.PhaserBridge.getGameSnapshot();
+      await hydrateFromSnapshot(snapshot, { preserveSelection: preserveSelection });
 
-      if (!state.snapshot.detected) {
-        state.selectedSceneKey = null;
-        state.selectedObjectPath = null;
-        state.outlinedSceneKey = null;
-        state.outlinedObjectPath = null;
-        state.sceneObjects = [];
-        state.objectDetails = null;
-        renderAll();
+      if (!snapshot.detected) {
         setStatus("No Phaser game detected on this page", false);
         return;
-      }
-
-      var scenes = state.snapshot.scenes || [];
-      var sceneStillExists = scenes.some(function (scene) {
-        return scene.key === state.selectedSceneKey;
-      });
-
-      if (!preserveSelection || !sceneStillExists) {
-        state.selectedSceneKey = scenes.length > 0 ? scenes[0].key : null;
-        state.selectedObjectPath = null;
-        state.objectDetails = null;
-        state.expandedPaths = {};
-      }
-
-      renderAll();
-      await loadSelectedSceneObjects();
-
-      if (state.selectedObjectPath !== null) {
-        var selectedObjectStillExists = state.sceneObjects.some(function (displayObject) {
-          return displayObject.path === state.selectedObjectPath;
-        });
-
-        if (!selectedObjectStillExists) {
-          state.selectedObjectPath = null;
-          state.objectDetails = null;
-        }
-      }
-
-      renderObjectList();
-
-      if (state.selectedObjectPath !== null) {
-        await loadSelectedObjectDetails();
-        await syncPageHighlight();
-      } else {
-        await window.PhaserBridge.clearHighlight();
       }
 
       setStatus("Phaser detected" + (state.selectedSceneKey ? " in " + state.selectedSceneKey : ""), false);
@@ -1060,9 +1737,12 @@
     state.selectedObjectPath = objectPath;
     state.outlinedSceneKey = sceneKey;
     state.outlinedObjectPath = objectPath;
+    state.activeInspectorTab = "displayObjects";
     ensureExpandedAncestors(objectPath);
 
+    syncSceneInspectorFromSnapshot();
     renderSceneList();
+    renderSceneInspectorPanels();
     await loadSelectedSceneObjects();
 
     var objectStillExists = state.sceneObjects.some(function (displayObject) {
@@ -1079,6 +1759,7 @@
 
     renderObjectList();
     await loadSelectedObjectDetails();
+    await loadSelectedSceneInspector();
     await syncPageHighlight();
     setStatus(sourceLabel, false);
   }
@@ -1088,10 +1769,12 @@
       return;
     }
 
+    state.activeInspectorTab = "displayObjects";
     state.selectedObjectPath = objectPath;
     state.outlinedSceneKey = state.selectedSceneKey;
     state.outlinedObjectPath = objectPath;
     ensureExpandedAncestors(objectPath);
+    renderSceneInspectorPanels();
     renderObjectList();
     elements.objectList.focus();
     setStatus("Loading object " + objectPath + "...", false);
@@ -1144,6 +1827,15 @@
     return !!(target && target.closest(".inline-inspector-control"));
   }
 
+  function isEditingCameraControl() {
+    return !!(
+      state.activeInspectorTab === "camera" &&
+      document.activeElement &&
+      document.activeElement.closest &&
+      document.activeElement.closest("[data-camera-property]")
+    );
+  }
+
   async function updateObjectProperty(objectPath, property, rawValue, valueType) {
     if (!objectPath || !property || !state.selectedSceneKey) {
       return;
@@ -1187,6 +1879,96 @@
     setStatus("Updated " + property + " on " + objectPath, false);
   }
 
+  async function updateSceneCameraPropertyFromControl(control) {
+    if (!control || !control.dataset || !state.selectedSceneKey) {
+      return;
+    }
+
+    var property = control.dataset.cameraProperty;
+    var valueType = control.dataset.valueType;
+    var value = control.type === "checkbox" ? control.checked : control.value;
+
+    if (valueType === "number") {
+      if (value === "") {
+        setStatus("Camera value cannot be empty", true);
+        return;
+      }
+
+      value = Number(value);
+
+      if (!Number.isFinite(value)) {
+        setStatus("Camera value must be a valid number", true);
+        return;
+      }
+    }
+
+    rememberCameraFocus(property);
+
+    var result = await window.PhaserBridge.updateSceneCameraProperty(
+      state.selectedSceneKey,
+      property,
+      valueType === "checkbox" ? !!value : value
+    );
+
+    if (result && result.error) {
+      setStatus(result.error, true);
+      return;
+    }
+
+    if (state.sceneInspector) {
+      state.sceneInspector.camera = result.camera;
+    }
+
+    var selectedScene = getSelectedSceneSummary();
+
+    if (selectedScene) {
+      selectedScene.camera = result.camera;
+    }
+
+    renderCameraPanel();
+    setStatus("Updated camera " + property + " in " + state.selectedSceneKey, false);
+  }
+
+  async function performSceneAction(actionName) {
+    if (!state.selectedSceneKey) {
+      return;
+    }
+
+    var result = await window.PhaserBridge.performSceneAction(state.selectedSceneKey, actionName);
+
+    if (!result || result.ok === false) {
+      setStatus((result && result.error) || "Failed to change scene state", true);
+      return;
+    }
+
+    await hydrateFromSnapshot(result.snapshot, { preserveSelection: true });
+    setStatus(
+      result.removed ? "Removed scene " + result.sceneKey : "Applied " + actionName + " to " + result.sceneKey,
+      false
+    );
+  }
+
+  async function performCameraAction(actionName) {
+    if (!state.selectedSceneKey) {
+      return;
+    }
+
+    var result = await window.PhaserBridge.performCameraAction(state.selectedSceneKey, actionName);
+
+    if (!result || result.ok === false) {
+      setStatus((result && result.error) || "Failed to change camera state", true);
+      return;
+    }
+
+    await hydrateFromSnapshot(result.snapshot, { preserveSelection: true });
+
+    if (result.camera && state.sceneInspector) {
+      state.sceneInspector.camera = result.camera;
+    }
+
+    setStatus("Ran camera action " + actionName + " in " + state.selectedSceneKey, false);
+  }
+
   async function outlineObject(objectPath) {
     rememberObjectListScroll();
 
@@ -1228,7 +2010,7 @@
   }
 
   async function handleTreeKeydown(event) {
-    if (!state.selectedSceneKey) {
+    if (!state.selectedSceneKey || state.activeInspectorTab !== "displayObjects") {
       return;
     }
 
@@ -1343,14 +2125,21 @@
     state.outlinedObjectPath = null;
     state.objectDetails = null;
     state.expandedPaths = {};
+    syncSceneInspectorFromSnapshot();
     renderSceneList();
+    renderSceneInspectorPanels();
     renderObjectList();
-    elements.objectList.focus();
+
+    if (state.activeInspectorTab === "displayObjects") {
+      elements.objectList.focus();
+    }
+
     setStatus("Loading scene " + sceneKey + "...", false);
 
     try {
       await window.PhaserBridge.clearHighlight();
       await loadSelectedSceneObjects();
+      await loadSelectedSceneInspector();
       setStatus("Loaded " + state.sceneObjects.length + " objects from " + sceneKey, false);
     } catch (error) {
       setStatus(error.message || "Failed to load scene objects", true);
@@ -1411,11 +2200,7 @@
       } catch (error) {
         setStatus(error.message || "Failed to update object", true);
       }
-
-      return;
     }
-
-    return;
   }
 
   async function handleInspectorControlChange(event) {
@@ -1429,6 +2214,20 @@
       await commitInspectorControlValue(control, { preserveFocus: true });
     } catch (error) {
       setStatus(error.message || "Failed to update object property", true);
+    }
+  }
+
+  async function handleCameraControlChange(event) {
+    var control = event.target.closest("[data-camera-property]");
+
+    if (!control) {
+      return;
+    }
+
+    try {
+      await updateSceneCameraPropertyFromControl(control);
+    } catch (error) {
+      setStatus(error.message || "Failed to update camera property", true);
     }
   }
 
@@ -1469,12 +2268,106 @@
     }
   }
 
+  async function pollSceneInspector() {
+    if (
+      document.hidden ||
+      !state.snapshot ||
+      !state.snapshot.detected ||
+      !state.selectedSceneKey ||
+      isEditingCameraControl()
+    ) {
+      return;
+    }
+
+    try {
+      await loadSelectedSceneInspector();
+    } catch (error) {
+      // Keep polling silent during runtime changes.
+    }
+  }
+
   function maybeAutoRefresh() {
     if (Date.now() - state.lastRefreshAt < AUTO_REFRESH_COOLDOWN_MS) {
       return;
     }
 
     refreshData({ preserveSelection: true });
+  }
+
+  function handleInspectorTabClick(event) {
+    var button = event.target.closest("[data-inspector-tab]");
+
+    if (!button) {
+      return;
+    }
+
+    var nextTab = button.dataset.inspectorTab;
+
+    if (!nextTab || nextTab === state.activeInspectorTab) {
+      return;
+    }
+
+    state.activeInspectorTab = nextTab;
+    renderSceneInspectorPanels();
+
+    if (nextTab === "displayObjects" && state.selectedSceneKey) {
+      elements.objectList.focus();
+    } else if (state.selectedSceneKey) {
+      loadSelectedSceneInspector().catch(function () {
+        // Passive refresh only.
+      });
+    }
+  }
+
+  function handleSceneActionClick(event) {
+    var button = event.target.closest("[data-scene-action]");
+
+    if (!button || button.disabled) {
+      return;
+    }
+
+    performSceneAction(button.dataset.sceneAction).catch(function (error) {
+      setStatus(error.message || "Failed to change scene state", true);
+    });
+  }
+
+  function handleCameraActionClick(event) {
+    var button = event.target.closest("[data-camera-action]");
+
+    if (!button || button.disabled) {
+      return;
+    }
+
+    performCameraAction(button.dataset.cameraAction).catch(function (error) {
+      setStatus(error.message || "Failed to run camera action", true);
+    });
+  }
+
+  function handleCameraPanelKeydown(event) {
+    var control = event.target.closest("[data-camera-property]");
+
+    if (!control) {
+      return;
+    }
+
+    if (event.key === "Enter") {
+      event.preventDefault();
+      updateSceneCameraPropertyFromControl(control).catch(function (error) {
+        setStatus(error.message || "Failed to update camera property", true);
+      });
+      return;
+    }
+
+    if (
+      (event.key === "ArrowUp" || event.key === "ArrowDown") &&
+      control.type === "number"
+    ) {
+      window.setTimeout(function () {
+        updateSceneCameraPropertyFromControl(control).catch(function (error) {
+          setStatus(error.message || "Failed to update camera property", true);
+        });
+      }, 0);
+    }
   }
 
   function bindEvents() {
@@ -1486,14 +2379,22 @@
       state.gameInfoExpanded = !state.gameInfoExpanded;
       renderGameInfoVisibility();
     });
+
     elements.pickButton.addEventListener("click", togglePickMode);
     elements.sceneList.addEventListener("click", handleSceneClick);
+    elements.inspectorTabs.addEventListener("click", handleInspectorTabClick);
     elements.objectList.addEventListener("click", handleObjectClick);
     elements.objectList.addEventListener("change", handleInspectorControlChange);
     elements.objectList.addEventListener("keydown", function (event) {
       handleTreeKeydown(event);
     });
     elements.breadcrumbs.addEventListener("click", handleObjectClick);
+    elements.statePanelContent.addEventListener("click", handleSceneActionClick);
+    elements.cameraPanelContent.addEventListener("click", handleCameraActionClick);
+    elements.cameraPanelContent.addEventListener("change", function (event) {
+      handleCameraControlChange(event);
+    });
+    elements.cameraPanelContent.addEventListener("keydown", handleCameraPanelKeydown);
     elements.objectFilter.addEventListener("input", function (event) {
       state.filterQuery = event.target.value || "";
 
@@ -1513,6 +2414,7 @@
     });
 
     window.setInterval(pollPickedSelection, PICK_POLL_INTERVAL_MS);
+    window.setInterval(pollSceneInspector, SCENE_TELEMETRY_POLL_INTERVAL_MS);
   }
 
   function initialize() {

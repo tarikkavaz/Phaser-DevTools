@@ -14,17 +14,21 @@
           <p id="status" class="status">Ready</p>
         </div>
         <div class="toolbar-actions">
-          <button id="pick-button" class="secondary-button" type="button">Pick on page</button>
+          <button id="pick-button" class="secondary-button topbar-button topbar-button-pick" type="button">
+            Pick on page
+          </button>
           <button
             id="game-info-toggle"
-            class="section-toggle-button"
+            class="section-toggle-button topbar-button topbar-button-info"
             type="button"
             aria-expanded="false"
             aria-controls="game-info-card"
           >
             Show game info
           </button>
-          <button id="refresh-button" class="refresh-button" type="button">Refresh</button>
+          <button id="refresh-button" class="refresh-button topbar-button topbar-button-refresh" type="button">
+            Refresh
+          </button>
         </div>
       </header>
 
@@ -82,23 +86,146 @@
               <div id="scene-list" class="list" role="list"></div>
             </section>
 
-            <section class="panel-card">
+            <section class="panel-card inspector-card">
               <div class="section-heading">
-                <h2>Display Objects</h2>
-                <p id="object-list-title" class="section-meta">Select a scene</p>
+                <div>
+                  <h2>Scene Inspector</h2>
+                  <p id="scene-inspector-title" class="section-meta">Select a scene</p>
+                </div>
+                <p id="scene-inspector-status" class="section-meta">No scene selected</p>
               </div>
-              <div class="tree-toolbar">
-                <input
-                  id="object-filter"
-                  class="tree-filter-input"
-                  type="search"
-                  placeholder="Filter by name, type, or path"
-                  autocomplete="off"
-                  spellcheck="false"
-                />
-                <div id="breadcrumbs" class="breadcrumbs"></div>
+
+              <div id="scene-inspector-header" class="scene-inspector-header">
+                <div class="scene-inspector-title-wrap">
+                  <h3 id="selected-scene-name" class="scene-inspector-name">No scene selected</h3>
+                  <div id="selected-scene-pills" class="scene-inspector-pills"></div>
+                </div>
+                <div id="selected-scene-meta" class="scene-inspector-meta"></div>
               </div>
-              <div id="object-list" class="list object-list" role="list" tabindex="0"></div>
+
+              <div id="inspector-tabs" class="inspector-tabs" role="tablist" aria-label="Scene inspector tabs">
+                <button
+                  id="tab-button-displayObjects"
+                  class="inspector-tab-button is-active"
+                  type="button"
+                  role="tab"
+                  aria-selected="true"
+                  aria-controls="tab-panel-displayObjects"
+                  data-inspector-tab="displayObjects"
+                >
+                  Display Objects
+                </button>
+                <button
+                  id="tab-button-state"
+                  class="inspector-tab-button"
+                  type="button"
+                  role="tab"
+                  aria-selected="false"
+                  aria-controls="tab-panel-state"
+                  data-inspector-tab="state"
+                >
+                  State
+                </button>
+                <button
+                  id="tab-button-load"
+                  class="inspector-tab-button"
+                  type="button"
+                  role="tab"
+                  aria-selected="false"
+                  aria-controls="tab-panel-load"
+                  data-inspector-tab="load"
+                >
+                  Load
+                </button>
+                <button
+                  id="tab-button-camera"
+                  class="inspector-tab-button"
+                  type="button"
+                  role="tab"
+                  aria-selected="false"
+                  aria-controls="tab-panel-camera"
+                  data-inspector-tab="camera"
+                >
+                  Camera
+                </button>
+                <button
+                  id="tab-button-fps"
+                  class="inspector-tab-button"
+                  type="button"
+                  role="tab"
+                  aria-selected="false"
+                  aria-controls="tab-panel-fps"
+                  data-inspector-tab="fps"
+                >
+                  FPS
+                </button>
+              </div>
+
+              <div class="inspector-panels">
+                <section
+                  id="tab-panel-displayObjects"
+                  class="inspector-tab-panel"
+                  role="tabpanel"
+                  aria-labelledby="tab-button-displayObjects"
+                  data-inspector-panel="displayObjects"
+                >
+                  <div class="tree-toolbar">
+                    <div class="display-objects-heading">
+                      <p id="object-list-title" class="section-meta">Select a scene</p>
+                    </div>
+                    <input
+                      id="object-filter"
+                      class="tree-filter-input"
+                      type="search"
+                      placeholder="Filter by name, type, or path"
+                      autocomplete="off"
+                      spellcheck="false"
+                    />
+                    <div id="breadcrumbs" class="breadcrumbs"></div>
+                  </div>
+                  <div id="object-list" class="list object-list" role="list" tabindex="0"></div>
+                </section>
+
+                <section
+                  id="tab-panel-state"
+                  class="inspector-tab-panel hidden"
+                  role="tabpanel"
+                  aria-labelledby="tab-button-state"
+                  data-inspector-panel="state"
+                >
+                  <div id="state-panel-content"></div>
+                </section>
+
+                <section
+                  id="tab-panel-load"
+                  class="inspector-tab-panel hidden"
+                  role="tabpanel"
+                  aria-labelledby="tab-button-load"
+                  data-inspector-panel="load"
+                >
+                  <div id="load-panel-content"></div>
+                </section>
+
+                <section
+                  id="tab-panel-camera"
+                  class="inspector-tab-panel hidden"
+                  role="tabpanel"
+                  aria-labelledby="tab-button-camera"
+                  data-inspector-panel="camera"
+                >
+                  <div id="camera-panel-content"></div>
+                </section>
+
+                <section
+                  id="tab-panel-fps"
+                  class="inspector-tab-panel hidden"
+                  role="tabpanel"
+                  aria-labelledby="tab-button-fps"
+                  data-inspector-panel="fps"
+                >
+                  <div id="fps-panel-content"></div>
+                </section>
+              </div>
             </section>
           </div>
         </div>

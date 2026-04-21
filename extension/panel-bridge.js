@@ -16,6 +16,16 @@
       return typeof value === "string" && value.length > 0 ? value : null;
     }
 
+    function clampByte(value) {
+      var parsed = Number(value);
+
+      if (!Number.isFinite(parsed)) {
+        return 0;
+      }
+
+      return Math.max(0, Math.min(255, Math.round(parsed)));
+    }
+
     function getRegistry() {
       if (!window.__PHASER_DEVTOOLS__ || typeof window.__PHASER_DEVTOOLS__ !== "object") {
         window.__PHASER_DEVTOOLS__ = { games: [] };
@@ -320,13 +330,280 @@
       return toBoolean(scene.sys.settings && scene.sys.settings.active);
     }
 
+    function getSceneStatus(scene) {
+      if (!scene || !scene.sys) {
+        return null;
+      }
+
+      var directStatus = toNumber(scene.sys.status);
+
+      if (directStatus !== null) {
+        return directStatus;
+      }
+
+      return toNumber(scene.sys.settings && scene.sys.settings.status);
+    }
+
+    function getSceneStatusLabel(scene) {
+      var status = getSceneStatus(scene);
+
+      if (status === null || !window.Phaser || !window.Phaser.Scenes) {
+        return null;
+      }
+
+      var sceneNamespace = window.Phaser.Scenes;
+      var keys;
+
+      try {
+        keys = Object.keys(sceneNamespace);
+      } catch (error) {
+        keys = [];
+      }
+
+      for (var index = 0; index < keys.length; index += 1) {
+        var key = keys[index];
+
+        if (sceneNamespace[key] === status && key === key.toUpperCase()) {
+          return key;
+        }
+      }
+
+      return String(status);
+    }
+
+    function getScenePaused(scene) {
+      if (!scene || !scene.sys) {
+        return null;
+      }
+
+      if (typeof scene.sys.isPaused === "function") {
+        try {
+          return toBoolean(scene.sys.isPaused());
+        } catch (error) {
+          // Ignore and fall back below.
+        }
+      }
+
+      return getSceneStatusLabel(scene) === "PAUSED";
+    }
+
+    function getSceneSleeping(scene) {
+      if (!scene || !scene.sys) {
+        return null;
+      }
+
+      if (typeof scene.sys.isSleeping === "function") {
+        try {
+          return toBoolean(scene.sys.isSleeping());
+        } catch (error) {
+          // Ignore and fall back below.
+        }
+      }
+
+      return getSceneStatusLabel(scene) === "SLEEPING";
+    }
+
+    function serializeLoad(scene) {
+      var loader = scene && scene.load ? scene.load : null;
+      var progress = toNumber(loader && loader.progress);
+      var totalComplete = toNumber(loader && loader.totalComplete);
+      var totalFailed = toNumber(loader && loader.totalFailed);
+      var totalToLoad = toNumber(loader && loader.totalToLoad);
+      var isLoading = null;
+
+      if (loader && typeof loader.isLoading === "function") {
+        try {
+          isLoading = toBoolean(loader.isLoading());
+        } catch (error) {
+          isLoading = null;
+        }
+      }
+
+      if (isLoading === null && loader && typeof loader.isReady === "function") {
+        try {
+          isLoading = !loader.isReady();
+        } catch (error) {
+          isLoading = null;
+        }
+      }
+
+      if (isLoading === null && progress !== null) {
+        isLoading = progress > 0 && progress < 1;
+      }
+
+      return {
+        progress: progress,
+        totalComplete: totalComplete,
+        totalFailed: totalFailed,
+        totalToLoad: totalToLoad,
+        isLoading: isLoading
+      };
+    }
+
+    function componentToHex(value) {
+      var hex = clampByte(value).toString(16);
+      return hex.length === 1 ? "0" + hex : hex;
+    }
+
+    function serializeColor(value) {
+      if (typeof value === "string") {
+        return value;
+      }
+
+      if (typeof value === "number" && Number.isFinite(value)) {
+        return "#" + ("000000" + (value >>> 0).toString(16)).slice(-6);
+      }
+
+      if (value && typeof value === "object") {
+        if (typeof value.rgba === "string" && value.rgba.length > 0) {
+          return value.rgba;
+        }
+
+        if (isFiniteNumber(value.color)) {
+          return "#" + ("000000" + (value.color >>> 0).toString(16)).slice(-6);
+        }
+
+        if (isFiniteNumber(value.r) && isFiniteNumber(value.g) && isFiniteNumber(value.b)) {
+          return "#" + componentToHex(value.r) + componentToHex(value.g) + componentToHex(value.b);
+        }
+      }
+
+      return null;
+    }
+
+    function getCameraOrigin(camera, axis) {
+      var directOrigin;
+
+      if (!camera) {
+        return null;
+      }
+
+      if (axis === "x") {
+        directOrigin = toNumber(camera.originX);
+
+        if (directOrigin !== null) {
+          return directOrigin;
+        }
+
+        return toNumber(camera.origin && camera.origin.x);
+      }
+
+      directOrigin = toNumber(camera.originY);
+
+      if (directOrigin !== null) {
+        return directOrigin;
+      }
+
+      return toNumber(camera.origin && camera.origin.y);
+    }
+
+    function getSceneCameraCount(scene) {
+      if (!scene || !scene.cameras) {
+        return 0;
+      }
+
+      if (Array.isArray(scene.cameras.cameras)) {
+        return scene.cameras.cameras.filter(function (camera) {
+          return !!camera;
+        }).length;
+      }
+
+      if (scene.cameras.main) {
+        return 1;
+      }
+
+      return 0;
+    }
+
+    function serializeCamera(camera, scene) {
+      var worldView = camera && camera.worldView ? camera.worldView : null;
+      var cameraCount = getSceneCameraCount(scene);
+
+      if (!camera) {
+        return null;
+      }
+
+      return {
+        name: toStringValue(camera.name) || "Main Camera",
+        x: toNumber(camera.x),
+        y: toNumber(camera.y),
+        width: toNumber(camera.width),
+        height: toNumber(camera.height),
+        scrollX: toNumber(camera.scrollX),
+        scrollY: toNumber(camera.scrollY),
+        zoom: toNumber(camera.zoom),
+        rotation: toNumber(camera.rotation),
+        roundPixels: toBoolean(camera.roundPixels),
+        visible: toBoolean(camera.visible),
+        backgroundColor: serializeColor(camera.backgroundColor),
+        alpha: toNumber(camera.alpha),
+        originX: getCameraOrigin(camera, "x"),
+        originY: getCameraOrigin(camera, "y"),
+        centerX: toNumber(camera.centerX),
+        centerY: toNumber(camera.centerY),
+        worldViewX: toNumber(worldView && worldView.x),
+        worldViewY: toNumber(worldView && worldView.y),
+        worldViewWidth: toNumber(worldView && worldView.width),
+        worldViewHeight: toNumber(worldView && worldView.height),
+        cameraCount: cameraCount,
+        actions: {
+          fadeIn: typeof camera.fadeIn === "function",
+          fadeOut: typeof camera.fadeOut === "function" || typeof camera.fade === "function",
+          flash: typeof camera.flash === "function",
+          resetFX: typeof camera.resetFX === "function",
+          shake: typeof camera.shake === "function",
+          destroy: cameraCount > 1 && !!(scene && scene.cameras && typeof scene.cameras.remove === "function")
+        }
+      };
+    }
+
+    function getSceneActions(scene) {
+      var statusLabel = getSceneStatusLabel(scene);
+      var active = getSceneActive(scene) === true;
+      var paused = getScenePaused(scene) === true;
+      var sleeping = getSceneSleeping(scene) === true;
+      var destroyed = statusLabel === "DESTROYED";
+      var stopped = statusLabel === "SHUTDOWN";
+
+      return {
+        pause: active && !paused && !sleeping && !destroyed,
+        resume: paused && !destroyed,
+        sleep: active && !sleeping && !destroyed,
+        wake: sleeping && !destroyed,
+        stop: !destroyed && !stopped && (active || paused || sleeping || statusLabel === "RUNNING"),
+        restart: !destroyed && !stopped,
+        remove: !destroyed
+      };
+    }
+
     function serializeScene(scene) {
       var sceneSettings = scene && scene.sys ? scene.sys.settings : null;
 
       return {
         key: sceneSettings && sceneSettings.key ? sceneSettings.key : "(unnamed scene)",
         active: getSceneActive(scene),
-        visible: getSceneVisibility(scene)
+        visible: getSceneVisibility(scene),
+        status: getSceneStatus(scene),
+        statusLabel: getSceneStatusLabel(scene),
+        isPaused: getScenePaused(scene),
+        isSleeping: getSceneSleeping(scene),
+        load: serializeLoad(scene),
+        camera: serializeCamera(scene && scene.cameras ? scene.cameras.main : null, scene),
+        sceneActions: getSceneActions(scene)
+      };
+    }
+
+    function serializeFps(game) {
+      var loop = game && game.loop ? game.loop : null;
+      var config = game && game.config ? game.config : null;
+      var fpsConfig = config && config.fps ? config.fps : null;
+
+      return {
+        actualFps: toNumber(loop && loop.actualFps),
+        targetFps: toNumber(loop && loop.targetFps) || toNumber(fpsConfig && fpsConfig.target),
+        fpsLimit: toNumber(loop && loop.fpsLimit) || toNumber(fpsConfig && fpsConfig.limit),
+        delta: toNumber(loop && loop.delta),
+        rawDelta: toNumber(loop && loop.rawDelta)
       };
     }
 
@@ -893,10 +1170,26 @@
           width: metrics.width,
           height: metrics.height,
           rendererType: getRendererType(game),
-          sceneCount: scenes.length
+          sceneCount: scenes.length,
+          fps: serializeFps(game)
         },
         scenes: scenes.map(serializeScene),
         pickModeEnabled: !!registry.uiState.pickMode.enabled
+      };
+    }
+
+    function getSceneInspector(sceneKey) {
+      ensureInteractiveTools();
+
+      var game = findGame();
+      var scene = game ? getSceneByKey(game, sceneKey) : null;
+
+      return {
+        sceneKey: sceneKey,
+        state: scene ? serializeScene(scene) : null,
+        load: scene ? serializeLoad(scene) : null,
+        camera: scene ? serializeCamera(scene.cameras && scene.cameras.main, scene) : null,
+        fps: game ? serializeFps(game) : null
       };
     }
 
@@ -1037,6 +1330,321 @@
       };
     }
 
+    function updateSceneCameraProperty(sceneKey, property, value) {
+      ensureInteractiveTools();
+
+      var editableProperties = {
+        x: "number",
+        y: "number",
+        width: "number",
+        height: "number",
+        scrollX: "number",
+        scrollY: "number",
+        zoom: "number",
+        rotation: "number",
+        roundPixels: "boolean",
+        visible: "boolean",
+        backgroundColor: "string"
+      };
+
+      if (!editableProperties[property]) {
+        return {
+          sceneKey: sceneKey,
+          property: property,
+          camera: null,
+          error: "Camera property is not editable"
+        };
+      }
+
+      var game = findGame();
+      var scene = game ? getSceneByKey(game, sceneKey) : null;
+      var camera = scene && scene.cameras ? scene.cameras.main : null;
+
+      if (!camera) {
+        return {
+          sceneKey: sceneKey,
+          property: property,
+          camera: null,
+          error: "Main camera not found"
+        };
+      }
+
+      var parsedValue = value;
+
+      if (editableProperties[property] === "number") {
+        parsedValue = Number(value);
+
+        if (!Number.isFinite(parsedValue)) {
+          return {
+            sceneKey: sceneKey,
+            property: property,
+            camera: serializeCamera(camera, scene),
+            error: "Value must be a finite number"
+          };
+        }
+      }
+
+      if (property === "x" || property === "y") {
+        if (typeof camera.setPosition === "function") {
+          camera.setPosition(
+            property === "x" ? parsedValue : toNumber(camera.x) || 0,
+            property === "y" ? parsedValue : toNumber(camera.y) || 0
+          );
+        } else {
+          camera[property] = parsedValue;
+        }
+      } else if (property === "width" || property === "height") {
+        if (typeof camera.setSize === "function") {
+          camera.setSize(
+            property === "width" ? parsedValue : toNumber(camera.width) || 0,
+            property === "height" ? parsedValue : toNumber(camera.height) || 0
+          );
+        } else {
+          camera[property] = parsedValue;
+        }
+      } else if (property === "scrollX" || property === "scrollY") {
+        if (typeof camera.setScroll === "function") {
+          camera.setScroll(
+            property === "scrollX" ? parsedValue : toNumber(camera.scrollX) || 0,
+            property === "scrollY" ? parsedValue : toNumber(camera.scrollY) || 0
+          );
+        } else {
+          camera[property] = parsedValue;
+        }
+      } else if (property === "zoom") {
+        if (typeof camera.setZoom === "function") {
+          camera.setZoom(parsedValue);
+        } else {
+          camera.zoom = parsedValue;
+        }
+      } else if (property === "rotation") {
+        if (typeof camera.setRotation === "function") {
+          camera.setRotation(parsedValue);
+        } else {
+          camera.rotation = parsedValue;
+        }
+      } else if (property === "visible") {
+        camera.visible = !!value;
+      } else if (property === "roundPixels") {
+        camera.roundPixels = !!value;
+      } else if (property === "backgroundColor") {
+        if (typeof value !== "string" || value.length === 0) {
+          return {
+            sceneKey: sceneKey,
+            property: property,
+            camera: serializeCamera(camera, scene),
+            error: "Background color must be a string"
+          };
+        }
+
+        if (typeof camera.setBackgroundColor === "function") {
+          camera.setBackgroundColor(value);
+        } else {
+          camera.backgroundColor = value;
+        }
+      }
+
+      return {
+        sceneKey: sceneKey,
+        property: property,
+        camera: serializeCamera(camera, scene)
+      };
+    }
+
+    function performCameraAction(sceneKey, action) {
+      ensureInteractiveTools();
+
+      var supportedActions = {
+        fadeIn: true,
+        fadeOut: true,
+        flash: true,
+        resetFX: true,
+        shake: true,
+        destroy: true
+      };
+
+      if (!supportedActions[action]) {
+        return {
+          sceneKey: sceneKey,
+          ok: false,
+          error: "Unsupported camera action"
+        };
+      }
+
+      var game = findGame();
+      var scene = game ? getSceneByKey(game, sceneKey) : null;
+      var cameraManager = scene ? scene.cameras : null;
+      var camera = cameraManager ? cameraManager.main : null;
+
+      if (!scene || !camera) {
+        return {
+          sceneKey: sceneKey,
+          ok: false,
+          error: "Main camera not found"
+        };
+      }
+
+      if (action === "fadeIn") {
+        if (typeof camera.fadeIn !== "function") {
+          return {
+            sceneKey: sceneKey,
+            ok: false,
+            error: "Fade in is not available on this camera"
+          };
+        }
+
+        camera.fadeIn(1000, 0, 0, 0);
+      } else if (action === "fadeOut") {
+        if (typeof camera.fadeOut !== "function") {
+          return {
+            sceneKey: sceneKey,
+            ok: false,
+            error: "Fade out is not available on this camera"
+          };
+        }
+
+        camera.fadeOut(1000, 0, 0, 0);
+      } else if (action === "flash") {
+        if (typeof camera.flash !== "function") {
+          return {
+            sceneKey: sceneKey,
+            ok: false,
+            error: "Flash is not available on this camera"
+          };
+        }
+
+        camera.flash(250, 255, 255, 255, true);
+      } else if (action === "resetFX") {
+        if (typeof camera.resetFX !== "function") {
+          return {
+            sceneKey: sceneKey,
+            ok: false,
+            error: "Reset FX is not available on this camera"
+          };
+        }
+
+        camera.resetFX();
+      } else if (action === "shake") {
+        if (typeof camera.shake !== "function") {
+          return {
+            sceneKey: sceneKey,
+            ok: false,
+            error: "Shake is not available on this camera"
+          };
+        }
+
+        camera.shake(100, 0.05, true);
+      } else if (action === "destroy") {
+        if (!cameraManager || typeof cameraManager.remove !== "function") {
+          return {
+            sceneKey: sceneKey,
+            ok: false,
+            error: "Camera manager cannot remove this camera"
+          };
+        }
+
+        if (getSceneCameraCount(scene) <= 1) {
+          return {
+            sceneKey: sceneKey,
+            ok: false,
+            error: "Cannot destroy the only camera in a scene"
+          };
+        }
+
+        cameraManager.remove(camera, true);
+        camera = cameraManager.main || null;
+      }
+
+      return {
+        sceneKey: sceneKey,
+        ok: true,
+        action: action,
+        camera: camera ? serializeCamera(camera, scene) : null,
+        snapshot: getGameSnapshot()
+      };
+    }
+
+    function trySceneAction(game, scene, action) {
+      var sceneManager = game && game.scene ? game.scene : null;
+      var scenePlugin = scene && scene.scene ? scene.scene : null;
+      var sceneKey = scene && scene.sys && scene.sys.settings ? scene.sys.settings.key : null;
+
+      if (action === "restart") {
+        if (scenePlugin && typeof scenePlugin.restart === "function") {
+          scenePlugin.restart();
+          return true;
+        }
+
+        if (sceneManager && typeof sceneManager.restart === "function") {
+          sceneManager.restart(sceneKey);
+          return true;
+        }
+      }
+
+      if (sceneManager && typeof sceneManager[action] === "function") {
+        sceneManager[action](sceneKey);
+        return true;
+      }
+
+      if (scenePlugin && typeof scenePlugin[action] === "function") {
+        scenePlugin[action]();
+        return true;
+      }
+
+      return false;
+    }
+
+    function performSceneAction(sceneKey, action) {
+      ensureInteractiveTools();
+
+      var supportedActions = {
+        pause: true,
+        resume: true,
+        sleep: true,
+        wake: true,
+        stop: true,
+        restart: true,
+        remove: true
+      };
+
+      if (!supportedActions[action]) {
+        return {
+          sceneKey: sceneKey,
+          ok: false,
+          error: "Unsupported scene action"
+        };
+      }
+
+      var game = findGame();
+      var scene = game ? getSceneByKey(game, sceneKey) : null;
+
+      if (!game || !scene) {
+        return {
+          sceneKey: sceneKey,
+          ok: false,
+          error: "Scene not found"
+        };
+      }
+
+      if (!trySceneAction(game, scene, action)) {
+        return {
+          sceneKey: sceneKey,
+          ok: false,
+          error: "Scene action is not available"
+        };
+      }
+
+      var snapshot = getGameSnapshot();
+      var removed = !getSceneByKey(game, sceneKey);
+
+      return {
+        sceneKey: sceneKey,
+        ok: true,
+        removed: removed,
+        snapshot: snapshot
+      };
+    }
+
     function highlightObject(sceneKey, objectPath) {
       ensureInteractiveTools();
 
@@ -1100,6 +1708,10 @@
         return { ok: true, data: getGameSnapshot() };
       }
 
+      if (command.type === "sceneInspector") {
+        return { ok: true, data: getSceneInspector(command.sceneKey) };
+      }
+
       if (command.type === "sceneObjects") {
         return { ok: true, data: getSceneObjects(command.sceneKey) };
       }
@@ -1116,6 +1728,27 @@
         return {
           ok: true,
           data: updateObjectProperty(command.sceneKey, command.objectPath, command.property, command.value)
+        };
+      }
+
+      if (command.type === "updateSceneCameraProperty") {
+        return {
+          ok: true,
+          data: updateSceneCameraProperty(command.sceneKey, command.property, command.value)
+        };
+      }
+
+      if (command.type === "performSceneAction") {
+        return {
+          ok: true,
+          data: performSceneAction(command.sceneKey, command.action)
+        };
+      }
+
+      if (command.type === "performCameraAction") {
+        return {
+          ok: true,
+          data: performCameraAction(command.sceneKey, command.action)
         };
       }
 
@@ -1177,6 +1810,10 @@
       return evaluateCommand({ type: "snapshot" });
     },
 
+    getSceneInspector: function (sceneKey) {
+      return evaluateCommand({ type: "sceneInspector", sceneKey: sceneKey });
+    },
+
     getSceneObjects: function (sceneKey) {
       return evaluateCommand({ type: "sceneObjects", sceneKey: sceneKey });
     },
@@ -1201,6 +1838,31 @@
         objectPath: objectPath,
         property: property,
         value: value
+      });
+    },
+
+    updateSceneCameraProperty: function (sceneKey, property, value) {
+      return evaluateCommand({
+        type: "updateSceneCameraProperty",
+        sceneKey: sceneKey,
+        property: property,
+        value: value
+      });
+    },
+
+    performSceneAction: function (sceneKey, action) {
+      return evaluateCommand({
+        type: "performSceneAction",
+        sceneKey: sceneKey,
+        action: action
+      });
+    },
+
+    performCameraAction: function (sceneKey, action) {
+      return evaluateCommand({
+        type: "performCameraAction",
+        sceneKey: sceneKey,
+        action: action
       });
     },
 
