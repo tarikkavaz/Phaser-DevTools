@@ -9,6 +9,27 @@
     "48": "icon.png",
     "128": "icon.png"
   },
+  "action": {
+    "default_title": "Phaser DevTools — how to open the panel",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon.png",
+      "32": "icon.png",
+      "48": "icon.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "commands": {
+    "open-phaser-popup": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Y",
+        "mac": "Command+Shift+Y"
+      },
+      "description": "Show Phaser DevTools instructions"
+    }
+  },
   "devtools_page": "devtools.html",
   "content_scripts": [
     {
