@@ -713,6 +713,14 @@ input {
   min-width: 0;
 }
 
+.tree-row-title-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
 .tree-row-name {
   display: block;
   min-width: 0;
@@ -721,6 +729,7 @@ input {
   flex: 1 1 auto;
 }
 
+.tree-row-copy-button,
 .tree-row-reset-button {
   flex: 0 0 auto;
   margin: 0;
@@ -736,10 +745,16 @@ input {
   white-space: nowrap;
 }
 
+.tree-row-copy-button {
+  background: color-mix(in srgb, var(--panel) 88%, var(--panel-muted));
+}
+
+.tree-row-copy-button:hover:not(:disabled),
 .tree-row-reset-button:hover:not(:disabled) {
   border-color: var(--accent);
 }
 
+.tree-row-copy-button:disabled,
 .tree-row-reset-button:disabled {
   opacity: 0.55;
   cursor: not-allowed;
@@ -864,6 +879,44 @@ input {
 .inspector-info-label,
 .camera-label {
   color: var(--muted);
+}
+
+.inline-inspector-label-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.inline-inspector-copy-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--panel) 88%, var(--panel-muted));
+  color: var(--muted);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.inline-inspector-copy-button::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  background: currentColor;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='black' d='M4 1.5h6a1.5 1.5 0 0 1 1.5 1.5v1H10V3H4v8h1v1.5H4A1.5 1.5 0 0 1 2.5 11V3A1.5 1.5 0 0 1 4 1.5zm3 3h5a1.5 1.5 0 0 1 1.5 1.5v7a1.5 1.5 0 0 1-1.5 1.5H7A1.5 1.5 0 0 1 5.5 13V6A1.5 1.5 0 0 1 7 4.5z'/%3E%3C/svg%3E")
+    center / contain no-repeat;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='black' d='M4 1.5h6a1.5 1.5 0 0 1 1.5 1.5v1H10V3H4v8h1v1.5H4A1.5 1.5 0 0 1 2.5 11V3A1.5 1.5 0 0 1 4 1.5zm3 3h5a1.5 1.5 0 0 1 1.5 1.5v7a1.5 1.5 0 0 1-1.5 1.5H7A1.5 1.5 0 0 1 5.5 13V6A1.5 1.5 0 0 1 7 4.5z'/%3E%3C/svg%3E")
+    center / contain no-repeat;
+}
+
+.inline-inspector-copy-button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .inline-inspector-value,

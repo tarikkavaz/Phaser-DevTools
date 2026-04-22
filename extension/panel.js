@@ -115,6 +115,42 @@
     return String(Math.round(value * 1000) / 10) + "%";
   }
 
+  function copyTextToClipboard(text) {
+    if (!text) {
+      return Promise.resolve(false);
+    }
+
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      return navigator.clipboard
+        .writeText(text)
+        .then(function () {
+          return true;
+        })
+        .catch(function () {
+          return false;
+        });
+    }
+
+    return new Promise(function (resolve) {
+      try {
+        var fallbackControl = document.createElement("textarea");
+        fallbackControl.value = text;
+        fallbackControl.setAttribute("readonly", "readonly");
+        fallbackControl.style.position = "fixed";
+        fallbackControl.style.opacity = "0";
+        fallbackControl.style.pointerEvents = "none";
+        document.body.appendChild(fallbackControl);
+        fallbackControl.focus();
+        fallbackControl.select();
+        var didCopy = document.execCommand("copy");
+        document.body.removeChild(fallbackControl);
+        resolve(!!didCopy);
+      } catch (error) {
+        resolve(false);
+      }
+    });
+  }
+
   function createPill(text, variant) {
     var pill = document.createElement("span");
     pill.className = "pill" + (variant ? " pill-" + variant : "");
@@ -627,9 +663,24 @@
       var item = document.createElement("label");
       item.className = "inline-inspector-item is-editable";
 
+      var labelWrap = document.createElement("span");
+      labelWrap.className = "inline-inspector-label-wrap";
+
       var label = document.createElement("span");
       label.className = "inline-inspector-label";
       label.textContent = field[0];
+
+      var copyButton = document.createElement("button");
+      copyButton.type = "button";
+      copyButton.className = "inline-inspector-copy-button";
+      copyButton.dataset.action = "copySettingField";
+      copyButton.dataset.objectPath = objectDetails.path;
+      copyButton.dataset.copyLabel = field[0];
+      copyButton.dataset.copyProperty = field[1];
+      copyButton.dataset.copySource = "editable";
+      copyButton.title = "Copy " + field[0];
+      copyButton.setAttribute("aria-label", "Copy " + field[0]);
+      copyButton.textContent = "";
 
       var controlWrap = document.createElement("span");
       controlWrap.className = "inline-inspector-control-wrap";
@@ -649,7 +700,9 @@
       }
 
       controlWrap.appendChild(control);
-      item.appendChild(label);
+      labelWrap.appendChild(label);
+      labelWrap.appendChild(copyButton);
+      item.appendChild(labelWrap);
       item.appendChild(controlWrap);
       editableGroup.appendChild(item);
     });
@@ -661,15 +714,32 @@
       var item = document.createElement("div");
       item.className = "inline-inspector-item";
 
+      var labelWrap = document.createElement("span");
+      labelWrap.className = "inline-inspector-label-wrap";
+
       var label = document.createElement("span");
       label.className = "inline-inspector-label";
       label.textContent = field[0];
+
+      var copyButton = document.createElement("button");
+      copyButton.type = "button";
+      copyButton.className = "inline-inspector-copy-button";
+      copyButton.dataset.action = "copySettingField";
+      copyButton.dataset.objectPath = objectDetails.path;
+      copyButton.dataset.copyLabel = field[0];
+      copyButton.dataset.copySource = "readonly";
+      copyButton.dataset.copyValue = formatValue(field[1]);
+      copyButton.title = "Copy " + field[0];
+      copyButton.setAttribute("aria-label", "Copy " + field[0]);
+      copyButton.textContent = "";
 
       var value = document.createElement("span");
       value.className = "inline-inspector-value";
       value.textContent = formatValue(field[1]);
 
-      item.appendChild(label);
+      labelWrap.appendChild(label);
+      labelWrap.appendChild(copyButton);
+      item.appendChild(labelWrap);
       item.appendChild(value);
       readonlyGroup.appendChild(item);
     });
@@ -685,6 +755,61 @@
         return displayObject.path === objectPath;
       }) || null
     );
+  }
+
+  function getObjectLabelByPath(objectPath) {
+    var displayObject = getObjectByPath(objectPath);
+
+    if (!displayObject) {
+      return objectPath;
+    }
+
+    return displayObject.name || displayObject.type || objectPath;
+  }
+
+  function formatBreadcrumbTrail(objectPath) {
+    if (!objectPath) {
+      return "";
+    }
+
+    var segments = getPathSegments(objectPath);
+    var currentPath = "";
+    var breadcrumbLabels = [];
+
+    segments.forEach(function (segment) {
+      currentPath = currentPath ? currentPath + "." + segment : segment;
+      breadcrumbLabels.push(getObjectLabelByPath(currentPath));
+    });
+
+    return breadcrumbLabels.join("/");
+  }
+
+  function getCurrentEditableValueText(objectPath, propertyKey) {
+    if (!objectPath || !propertyKey || !elements.objectList) {
+      return "";
+    }
+
+    var control = elements.objectList.querySelector(
+      '.inline-inspector-control[data-object-path="' +
+        objectPath +
+        '"][data-edit-key="' +
+        propertyKey +
+        '"]'
+    );
+
+    if (!control) {
+      return "";
+    }
+
+    if (control.type === "checkbox") {
+      return control.checked ? "true" : "false";
+    }
+
+    return control.value;
+  }
+
+  function buildSettingCopyLine(label, valueText) {
+    return String(label || "").trim() + ": " + String(valueText === undefined ? "" : valueText).trim();
   }
 
   function getChildrenOfPath(objectPath) {
@@ -917,7 +1042,11 @@
   }
 
   function bindTreeRowSelect(mainButton, objectPath) {
-    mainButton.addEventListener("click", function () {
+    mainButton.addEventListener("click", function (event) {
+      if (event.target && event.target.closest && event.target.closest("[data-action]")) {
+        return;
+      }
+
       toggleObjectSelection(objectPath).catch(function (error) {
         setStatus(error.message || "Failed to load object details", true);
       });
@@ -1061,22 +1190,37 @@
 
       if (
         displayObject.path === state.selectedObjectPath &&
-        detailsForRow &&
-        detailsForRow.canReset
+        detailsForRow
       ) {
         var titleRow = document.createElement("div");
         titleRow.className = "tree-row-title-row";
 
-        var resetButton = document.createElement("button");
-        resetButton.type = "button";
-        resetButton.className = "tree-row-reset-button";
-        resetButton.dataset.action = "reset";
-        resetButton.dataset.objectPath = detailsForRow.path;
-        resetButton.textContent = "Reset";
-        resetButton.title = "Restore original transform and visibility";
+        var titleActions = document.createElement("div");
+        titleActions.className = "tree-row-title-actions";
+
+        var copyPathButton = document.createElement("button");
+        copyPathButton.type = "button";
+        copyPathButton.className = "tree-row-copy-button";
+        copyPathButton.dataset.action = "copyPath";
+        copyPathButton.dataset.objectPath = detailsForRow.path;
+        copyPathButton.textContent = "Copy breadcrumb";
+        copyPathButton.title = "Copy full breadcrumb path";
 
         titleRow.appendChild(name);
-        titleRow.appendChild(resetButton);
+        titleActions.appendChild(copyPathButton);
+
+        if (detailsForRow.canReset) {
+          var resetButton = document.createElement("button");
+          resetButton.type = "button";
+          resetButton.className = "tree-row-reset-button";
+          resetButton.dataset.action = "reset";
+          resetButton.dataset.objectPath = detailsForRow.path;
+          resetButton.textContent = "Reset";
+          resetButton.title = "Restore original transform and visibility";
+          titleActions.appendChild(resetButton);
+        }
+
+        titleRow.appendChild(titleActions);
         mainButton.appendChild(titleRow);
       } else {
         mainButton.appendChild(name);
@@ -2252,6 +2396,32 @@
 
         if (actionName === "visibility") {
           await changeObjectVisibility(actionPath);
+          return;
+        }
+
+        if (actionName === "copyPath") {
+          var breadcrumbTrail = formatBreadcrumbTrail(actionPath);
+          var copiedPath = await copyTextToClipboard(breadcrumbTrail);
+          setStatus(copiedPath ? "Copied breadcrumb path" : "Failed to copy breadcrumb path", !copiedPath);
+          return;
+        }
+
+        if (actionName === "copySettingField") {
+          var fieldLabel = actionButton.dataset.copyLabel || "Value";
+          var copySource = actionButton.dataset.copySource || "";
+          var fieldValue = "";
+
+          if (copySource === "editable") {
+            fieldValue = getCurrentEditableValueText(actionPath, actionButton.dataset.copyProperty);
+          } else {
+            fieldValue = actionButton.dataset.copyValue || "";
+          }
+
+          var copiedField = await copyTextToClipboard(buildSettingCopyLine(fieldLabel, fieldValue));
+          setStatus(
+            copiedField ? "Copied " + fieldLabel + " value" : "Failed to copy " + fieldLabel + " value",
+            !copiedField
+          );
           return;
         }
 
