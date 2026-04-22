@@ -6,15 +6,31 @@ Use this as your submission source-of-truth when filling the listing.
 
 - Developer Dashboard account (one-time registration done)
 - Public support URL
-- Public privacy policy URL (host `docs/privacy-policy.md`)
+- Public privacy policy URL
 - At least one screenshot of the extension UI
 - Final release zip filename and version
+
+## URLs For This Repository
+
+- Repository: `https://github.com/tarikkavaz/Phaser-DevTools`
+- Support URL: `https://github.com/tarikkavaz/Phaser-DevTools/issues`
+- Privacy Policy URL: `https://github.com/tarikkavaz/Phaser-DevTools/blob/main/docs/privacy-policy.md`
 
 ## Recommended Inputs You Should Provide
 
 - 3 to 5 screenshots showing key workflows
 - Optional promo images if you want better store presentation
 - Contact email for support
+
+## Screenshot Set For Upload
+
+Chrome Web Store accepts up to 5 screenshots. Use these 5 files from `docs/images`:
+
+- `1-objects.png`
+- `2-state.png`
+- `3-load.png`
+- `4-camera.png`
+- `5-fps.png`
 
 ## Suggested Listing Copy
 
@@ -53,7 +69,7 @@ When completing Chrome Web Store forms:
 ## Pre-Submit Verification
 
 - `manifest.json` version incremented
-- `extension/icon.png` exists and loads
+- `extension/icon-16.png`, `extension/icon-32.png`, `extension/icon-48.png`, and `extension/icon-128.png` exist and load
 - `popup.html`, `devtools.html`, `panel.html` and all referenced scripts/styles exist
-- Privacy policy URL is publicly accessible
-- Support URL is publicly accessible
+- Privacy policy URL is publicly accessible and points to this repo
+- Support URL is publicly accessible and points to this repo issues page

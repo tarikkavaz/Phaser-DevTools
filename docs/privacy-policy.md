@@ -22,4 +22,6 @@ Phaser DevTools does not retain user data.
 
 ## Contact
 
-For questions about this policy, use the project support channel listed in the Chrome Web Store entry.
+For questions about this policy, open an issue at:
+
+`https://github.com/tarikkavaz/Phaser-DevTools/issues`

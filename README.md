@@ -29,7 +29,7 @@ Phaser DevTools is a Chrome DevTools extension that adds a dedicated `Phaser` pa
 
 ## Screenshot
 
-![Phaser DevTools panel screenshot](docs/images/screenshot.png)
+![Phaser DevTools panel screenshot](docs/images/1-objects.png)
 
 ## Install for Development (Unpacked)
 
@@ -42,7 +42,10 @@ Phaser DevTools is a Chrome DevTools extension that adds a dedicated `Phaser` pa
 
 ## Install from Chrome Web Store
 
-After publication, install directly from the Chrome Web Store listing (link to be added here).
+Install directly from the Chrome Web Store listing.
+
+Support: `https://github.com/tarikkavaz/Phaser-DevTools/issues`  
+Privacy policy: `https://github.com/tarikkavaz/Phaser-DevTools/blob/main/docs/privacy-policy.md`
 
 ## Publish Checklist (Chrome Web Store)
 
