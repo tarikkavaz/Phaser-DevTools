@@ -694,18 +694,21 @@
         });
     }
 
-    function serializeDisplayObjectSummary(displayObject, pathSegments, depth) {
+    function serializeDisplayObjectSummary(sceneKey, displayObject, pathSegments, depth) {
       var childCount = getObjectChildren(displayObject).length;
+      var objectPath = pathToString(pathSegments);
+      var baseline = getObjectEditBaseline(sceneKey, objectPath);
 
       return {
-        path: pathToString(pathSegments),
+        path: objectPath,
         depth: depth,
         name: toStringValue(displayObject && displayObject.name),
         type: getObjectType(displayObject),
         x: toNumber(displayObject && displayObject.x),
         y: toNumber(displayObject && displayObject.y),
         visible: toBoolean(displayObject && displayObject.visible),
-        childCount: childCount
+        childCount: childCount,
+        changed: hasChangedEditableProperties(displayObject, baseline)
       };
     }
 
@@ -727,6 +730,35 @@
         visible: toBoolean(displayObject.visible),
         rotation: toNumber(displayObject.rotation)
       };
+    }
+
+    function getChangedEditableProperties(displayObject, baseline) {
+      var current = getEditableObjectSnapshot(displayObject);
+      var changed = {};
+
+      if (!current || !baseline) {
+        return changed;
+      }
+
+      Object.keys(current).forEach(function (property) {
+        if (current[property] !== baseline[property]) {
+          changed[property] = true;
+        }
+      });
+
+      return changed;
+    }
+
+    function hasChangedEditableProperties(displayObject, baseline) {
+      return Object.keys(getChangedEditableProperties(displayObject, baseline)).length > 0;
+    }
+
+    function reconcileObjectEditBaseline(sceneKey, objectPath, displayObject) {
+      var baseline = getObjectEditBaseline(sceneKey, objectPath);
+
+      if (baseline && !hasChangedEditableProperties(displayObject, baseline)) {
+        clearObjectEditBaseline(sceneKey, objectPath);
+      }
     }
 
     function captureObjectEditBaseline(sceneKey, objectPath, displayObject) {
@@ -775,6 +807,8 @@
         return null;
       }
 
+      var baseline = getObjectEditBaseline(sceneKey, objectPath);
+
       return {
         path: objectPath,
         name: toStringValue(displayObject.name),
@@ -788,17 +822,19 @@
         rotation: toNumber(displayObject.rotation),
         textureKey: getTextureKey(displayObject),
         childCount: getObjectChildren(displayObject).length,
-        canReset: !!getObjectEditBaseline(sceneKey, objectPath)
+        originalValues: baseline,
+        changedProperties: getChangedEditableProperties(displayObject, baseline),
+        canReset: !!baseline
       };
     }
 
-    function flattenSceneObjects(objects, depth, parentPathSegments, results) {
+    function flattenSceneObjects(sceneKey, objects, depth, parentPathSegments, results) {
       for (var index = 0; index < objects.length; index += 1) {
         var displayObject = objects[index];
         var pathSegments = parentPathSegments.concat(index);
 
-        results.push(serializeDisplayObjectSummary(displayObject, pathSegments, depth));
-        flattenSceneObjects(getObjectChildren(displayObject), depth + 1, pathSegments, results);
+        results.push(serializeDisplayObjectSummary(sceneKey, displayObject, pathSegments, depth));
+        flattenSceneObjects(sceneKey, getObjectChildren(displayObject), depth + 1, pathSegments, results);
       }
     }
 
@@ -1076,6 +1112,14 @@
             return;
           }
 
+          if (highlight.isChanged) {
+            overlay.style.borderColor = "#22c55e";
+            overlay.style.boxShadow = "0 0 0 9999px rgba(34, 197, 94, 0.1)";
+          } else {
+            overlay.style.borderColor = "#00d0ff";
+            overlay.style.boxShadow = "0 0 0 9999px rgba(0, 208, 255, 0.08)";
+          }
+
           overlay.style.display = "block";
           overlay.style.left = screenBounds.left + "px";
           overlay.style.top = screenBounds.top + "px";
@@ -1278,7 +1322,7 @@
       var scene = getSceneByKey(game, sceneKey);
       var objects = [];
 
-      flattenSceneObjects(getDisplayList(scene), 0, [], objects);
+      flattenSceneObjects(sceneKey, getDisplayList(scene), 0, [], objects);
 
       return {
         sceneKey: sceneKey,
@@ -1331,6 +1375,8 @@
         captureObjectEditBaseline(sceneKey, objectPath, displayObject);
         displayObject.visible = !!visible;
       }
+
+      reconcileObjectEditBaseline(sceneKey, objectPath, displayObject);
 
       return {
         sceneKey: sceneKey,
@@ -1397,6 +1443,8 @@
         displayObject[property] = parsedValue;
       }
 
+      reconcileObjectEditBaseline(sceneKey, objectPath, displayObject);
+
       return {
         sceneKey: sceneKey,
         objectPath: objectPath,
@@ -1437,6 +1485,47 @@
         sceneKey: sceneKey,
         objectPath: objectPath,
         object: serializeDisplayObjectDetails(sceneKey, displayObject, objectPath)
+      };
+    }
+
+    function resetAllObjectEdits(sceneKey) {
+      ensureInteractiveTools();
+
+      var registry = getRegistry();
+      var game = findGame();
+      var scene = game ? getSceneByKey(game, sceneKey) : null;
+
+      if (!scene) {
+        return {
+          sceneKey: sceneKey,
+          resetCount: 0,
+          error: "Scene not found"
+        };
+      }
+
+      var prefix = String(sceneKey || "") + "::";
+      var resetCount = 0;
+
+      Object.keys(registry.uiState.objectEditBaselines).forEach(function (baselineKey) {
+        if (baselineKey.indexOf(prefix) !== 0) {
+          return;
+        }
+
+        var objectPath = baselineKey.slice(prefix.length);
+        var displayObject = getDisplayObjectByPath(scene, objectPath);
+        var baseline = registry.uiState.objectEditBaselines[baselineKey];
+
+        if (displayObject && baseline) {
+          applyEditableObjectSnapshot(displayObject, baseline);
+          resetCount += 1;
+        }
+
+        delete registry.uiState.objectEditBaselines[baselineKey];
+      });
+
+      return {
+        sceneKey: sceneKey,
+        resetCount: resetCount
       };
     }
 
@@ -1755,14 +1844,15 @@
       };
     }
 
-    function highlightObject(sceneKey, objectPath) {
+    function highlightObject(sceneKey, objectPath, isChanged) {
       ensureInteractiveTools();
 
       var registry = getRegistry();
 
       registry.uiState.highlight = {
         sceneKey: sceneKey,
-        objectPath: objectPath
+        objectPath: objectPath,
+        isChanged: !!isChanged
       };
 
       return {
@@ -1848,6 +1938,13 @@
         };
       }
 
+      if (command.type === "resetAllObjectEdits") {
+        return {
+          ok: true,
+          data: resetAllObjectEdits(command.sceneKey)
+        };
+      }
+
       if (command.type === "updateSceneCameraProperty") {
         return {
           ok: true,
@@ -1870,7 +1967,10 @@
       }
 
       if (command.type === "highlightObject") {
-        return { ok: true, data: highlightObject(command.sceneKey, command.objectPath) };
+        return {
+          ok: true,
+          data: highlightObject(command.sceneKey, command.objectPath, command.isChanged)
+        };
       }
 
       if (command.type === "clearHighlight") {
@@ -1966,6 +2066,13 @@
       });
     },
 
+    resetAllObjectEdits: function (sceneKey) {
+      return evaluateCommand({
+        type: "resetAllObjectEdits",
+        sceneKey: sceneKey
+      });
+    },
+
     updateSceneCameraProperty: function (sceneKey, property, value) {
       return evaluateCommand({
         type: "updateSceneCameraProperty",
@@ -1991,11 +2098,12 @@
       });
     },
 
-    highlightObject: function (sceneKey, objectPath) {
+    highlightObject: function (sceneKey, objectPath, isChanged) {
       return evaluateCommand({
         type: "highlightObject",
         sceneKey: sceneKey,
-        objectPath: objectPath
+        objectPath: objectPath,
+        isChanged: !!isChanged
       });
     },
 

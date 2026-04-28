@@ -36,6 +36,7 @@
   function cacheElements() {
     elements.status = document.getElementById("status");
     elements.refreshButton = document.getElementById("refresh-button");
+    elements.resetAllButton = document.getElementById("reset-all-button");
     elements.pickButton = document.getElementById("pick-button");
     elements.emptyState = document.getElementById("empty-state");
     elements.content = document.getElementById("content");
@@ -245,6 +246,12 @@
 
   function renderToolbarButtons() {
     elements.pickButton.textContent = state.pickModeEnabled ? "Cancel pick" : "Pick on page";
+    elements.resetAllButton.disabled =
+      state.isRefreshing ||
+      !state.selectedSceneKey ||
+      !state.sceneObjects.some(function (displayObject) {
+        return displayObject.changed;
+      });
   }
 
   function isObjectOutlined(sceneKey, objectPath) {
@@ -639,6 +646,16 @@
     }
 
     var objectDetails = details.object;
+    var changedProperties = objectDetails.changedProperties || {};
+    var originalValues = objectDetails.originalValues || {};
+    var hasChangedFields = Object.keys(changedProperties).some(function (property) {
+      return changedProperties[property] === true;
+    });
+
+    if (hasChangedFields) {
+      inspector.classList.add("has-changes");
+    }
+
     var editableFields = [
       ["X", "x", objectDetails.x, "number", "1"],
       ["Y", "y", objectDetails.y, "number", "1"],
@@ -660,8 +677,9 @@
     editableGroup.className = "inline-inspector-group";
 
     editableFields.forEach(function (field) {
+      var isChanged = changedProperties[field[1]] === true;
       var item = document.createElement("label");
-      item.className = "inline-inspector-item is-editable";
+      item.className = "inline-inspector-item is-editable" + (isChanged ? " is-changed" : "");
 
       var labelWrap = document.createElement("span");
       labelWrap.className = "inline-inspector-label-wrap";
@@ -669,6 +687,13 @@
       var label = document.createElement("span");
       label.className = "inline-inspector-label";
       label.textContent = field[0];
+
+      if (isChanged) {
+        var originalValue = document.createElement("span");
+        originalValue.className = "inline-inspector-original-value";
+        originalValue.textContent = "[original value: " + formatValue(originalValues[field[1]]) + "]";
+        label.appendChild(originalValue);
+      }
 
       var copyButton = document.createElement("button");
       copyButton.type = "button";
@@ -1060,6 +1085,7 @@
       elements.objectListTitle.textContent = "Select a scene";
       elements.objectList.innerHTML = '<p class="placeholder">Pick a scene to inspect its object tree.</p>';
       renderBreadcrumbs();
+      renderToolbarButtons();
       return;
     }
 
@@ -1070,6 +1096,7 @@
     if (visibleObjects.length === 0) {
       elements.objectList.innerHTML = '<p class="placeholder">No matching objects found.</p>';
       renderBreadcrumbs();
+      renderToolbarButtons();
       return;
     }
 
@@ -1082,6 +1109,7 @@
       row.className =
         "list-row tree-row" +
         (displayObject.path === state.selectedObjectPath ? " selected" : "") +
+        (displayObject.changed ? " has-changes" : "") +
         (displayObject.childCount > 0 ? " has-children" : " is-leaf") +
         (state.expandedPaths[displayObject.path] ? " is-expanded" : "");
 
@@ -1181,6 +1209,14 @@
       name.className = "tree-row-name";
       name.textContent = displayObject.name || displayObject.type || "Unnamed object";
 
+      if (displayObject.changed) {
+        var changedIndicator = document.createElement("span");
+        changedIndicator.className = "tree-row-change-indicator";
+        changedIndicator.textContent = "modified";
+        changedIndicator.title = "This object has values changed from the original";
+        name.appendChild(changedIndicator);
+      }
+
       var detailsForRow =
         state.objectDetails &&
         state.objectDetails.object &&
@@ -1259,6 +1295,7 @@
 
     elements.objectList.appendChild(fragment);
     renderBreadcrumbs();
+    renderToolbarButtons();
 
     var selectedRow = elements.objectList.querySelector(
       '.tree-row[data-object-path="' + state.selectedObjectPath + '"]'
@@ -1750,12 +1787,36 @@
     state.refreshQueued = true;
   }
 
+  function hasChangedObjectDetails(objectDetails) {
+    var changedProperties = objectDetails && objectDetails.changedProperties;
+
+    if (!changedProperties) {
+      return false;
+    }
+
+    return Object.keys(changedProperties).some(function (property) {
+      return changedProperties[property] === true;
+    });
+  }
+
   function syncPageHighlight() {
     if (!state.outlinedSceneKey || !state.outlinedObjectPath) {
       return window.PhaserBridge.clearHighlight();
     }
 
-    return window.PhaserBridge.highlightObject(state.outlinedSceneKey, state.outlinedObjectPath);
+    var highlightedObject =
+      state.objectDetails &&
+      state.objectDetails.object &&
+      state.objectDetails.object.path === state.outlinedObjectPath
+        ? state.objectDetails.object
+        : null;
+    var highlightedSummary = getObjectByPath(state.outlinedObjectPath);
+
+    return window.PhaserBridge.highlightObject(
+      state.outlinedSceneKey,
+      state.outlinedObjectPath,
+      hasChangedObjectDetails(highlightedObject) || !!(highlightedSummary && highlightedSummary.changed)
+    );
   }
 
   async function loadSelectedSceneInspector() {
@@ -2021,6 +2082,33 @@
     }
 
     setStatus("Reset edits on " + objectPath, false);
+  }
+
+  async function resetAllObjectEdits() {
+    if (!state.selectedSceneKey) {
+      return;
+    }
+
+    rememberObjectListScroll();
+    elements.resetAllButton.disabled = true;
+    setStatus("Resetting changed values in " + state.selectedSceneKey + "...", false);
+
+    var result = await window.PhaserBridge.resetAllObjectEdits(state.selectedSceneKey);
+
+    if (result && result.error) {
+      setStatus(result.error, true);
+      renderToolbarButtons();
+      return;
+    }
+
+    await loadSelectedSceneObjects();
+
+    if (state.selectedObjectPath) {
+      await loadSelectedObjectDetails();
+    }
+
+    await syncPageHighlight();
+    setStatus("Reset " + formatValue(result && result.resetCount) + " changed object(s)", false);
   }
 
   function isEditableInspectorTarget(target) {
@@ -2604,6 +2692,13 @@
   function bindEvents() {
     elements.refreshButton.addEventListener("click", function () {
       refreshData({ preserveSelection: true });
+    });
+
+    elements.resetAllButton.addEventListener("click", function () {
+      resetAllObjectEdits().catch(function (error) {
+        setStatus(error.message || "Failed to reset changed values", true);
+        renderToolbarButtons();
+      });
     });
 
     elements.gameInfoToggle.addEventListener("click", function () {
