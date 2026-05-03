@@ -38,10 +38,27 @@
       if (!window.__PHASER_DEVTOOLS__.uiState || typeof window.__PHASER_DEVTOOLS__.uiState !== "object") {
         window.__PHASER_DEVTOOLS__.uiState = {
           highlight: null,
+          overlays: {
+            selectedBounds: true,
+            allBounds: false,
+            origins: false,
+            cameraViewport: false,
+            cameraWorldView: false,
+            sceneKey: null,
+            objectPath: null
+          },
           pickMode: { enabled: false, sceneKey: null },
           pendingSelection: null,
-          objectEditBaselines: {}
+          objectEditBaselines: {},
+          console: { enabled: false, sceneKey: null, objectPath: null }
         };
+      }
+
+      if (
+        !window.__PHASER_DEVTOOLS__.uiState.overlays ||
+        typeof window.__PHASER_DEVTOOLS__.uiState.overlays !== "object"
+      ) {
+        window.__PHASER_DEVTOOLS__.uiState.overlays = {};
       }
 
       if (
@@ -49,6 +66,28 @@
         typeof window.__PHASER_DEVTOOLS__.uiState.objectEditBaselines !== "object"
       ) {
         window.__PHASER_DEVTOOLS__.uiState.objectEditBaselines = {};
+      }
+
+      if (
+        !window.__PHASER_DEVTOOLS__.uiState.console ||
+        typeof window.__PHASER_DEVTOOLS__.uiState.console !== "object"
+      ) {
+        window.__PHASER_DEVTOOLS__.uiState.console = {
+          enabled: false,
+          sceneKey: null,
+          objectPath: null
+        };
+      }
+
+      if (
+        !window.__PHASER_DEVTOOLS__.originalTextureUrls ||
+        typeof window.__PHASER_DEVTOOLS__.originalTextureUrls !== "object"
+      ) {
+        window.__PHASER_DEVTOOLS__.originalTextureUrls = {};
+      }
+
+      if (!Array.isArray(window.__PHASER_DEVTOOLS__.loaderEvents)) {
+        window.__PHASER_DEVTOOLS__.loaderEvents = [];
       }
 
       return window.__PHASER_DEVTOOLS__;
@@ -411,8 +450,176 @@
       return getSceneStatusLabel(scene) === "SLEEPING";
     }
 
+    function serializeLoaderFile(file) {
+      if (!file || typeof file !== "object") {
+        return null;
+      }
+
+      return {
+        key: toStringValue(file.key),
+        type: toStringValue(file.type),
+        url:
+          toStringValue(file.url) ||
+          toStringValue(file.src) ||
+          toStringValue(file.path && file.url ? String(file.path) + String(file.url) : null),
+        state: toStringValue(file.state) || (file.state !== null && file.state !== undefined ? String(file.state) : null),
+        error:
+          toStringValue(file.error) ||
+          toStringValue(file.errorMessage) ||
+          toStringValue(file.xhrLoader && file.xhrLoader.statusText),
+        percentComplete: toNumber(file.percentComplete),
+        bytesLoaded: toNumber(file.bytesLoaded),
+        bytesTotal: toNumber(file.bytesTotal)
+      };
+    }
+
+    function rememberOriginalTextureUrl(file) {
+      var serialized = serializeLoaderFile(file);
+      var registry = getRegistry();
+      var key = serialized && serialized.key;
+      var url = serialized && serialized.url;
+
+      if (!key || !url || url.indexOf("blob:") === 0) {
+        return;
+      }
+
+      registry.originalTextureUrls[key] = url;
+    }
+
+    function rememberLoaderEvent(eventName, file) {
+      var serialized = serializeLoaderFile(file);
+      var registry = getRegistry();
+
+      if (!serialized || (!serialized.key && !serialized.url)) {
+        return;
+      }
+
+      registry.loaderEvents.push({
+        event: eventName,
+        key: serialized.key,
+        type: serialized.type,
+        url: serialized.url,
+        state: serialized.state,
+        error: serialized.error,
+        time: Date.now()
+      });
+
+      if (registry.loaderEvents.length > 80) {
+        registry.loaderEvents.splice(0, registry.loaderEvents.length - 80);
+      }
+    }
+
+    function collectLoaderFilesFromCollection(collection, results, seen) {
+      if (!collection) {
+        return;
+      }
+
+      if (Array.isArray(collection)) {
+        collection.forEach(function (file) {
+          var serialized = serializeLoaderFile(file);
+
+          if (!serialized) {
+            return;
+          }
+
+          rememberOriginalTextureUrl(file);
+          rememberLoaderEvent("snapshot", file);
+
+          var key = [serialized.type, serialized.key, serialized.url, serialized.state].join("::");
+
+          if (seen[key]) {
+            return;
+          }
+
+          seen[key] = true;
+          results.push(serialized);
+        });
+        return;
+      }
+
+      if (typeof collection.each === "function") {
+        try {
+          collection.each(function (file) {
+            collectLoaderFilesFromCollection([file], results, seen);
+          });
+          return;
+        } catch (error) {
+          // Fall through to object scanning.
+        }
+      }
+
+      if (typeof collection.entries === "function") {
+        try {
+          collectLoaderFilesFromCollection(Array.from(collection.entries()), results, seen);
+          return;
+        } catch (error) {
+          // Fall through to object scanning.
+        }
+      }
+
+      if (typeof collection.entries === "object") {
+        try {
+          collectLoaderFilesFromCollection(Array.from(collection.entries), results, seen);
+          return;
+        } catch (error) {
+          // Fall through to object scanning.
+        }
+      }
+
+      if (typeof collection === "object") {
+        Object.keys(collection).forEach(function (key) {
+          try {
+            collectLoaderFilesFromCollection([collection[key]], results, seen);
+          } catch (error) {
+            // Ignore inaccessible loader internals.
+          }
+        });
+      }
+    }
+
+    function collectLoaderFileGroup(loader, names) {
+      var results = [];
+      var seen = {};
+
+      names.forEach(function (name) {
+        try {
+          collectLoaderFilesFromCollection(loader && loader[name], results, seen);
+        } catch (error) {
+          // Loader internals vary by Phaser version.
+        }
+      });
+
+      return results;
+    }
+
+    function attachLoaderUrlTracker(loader) {
+      if (!loader || loader.__PHASER_DEVTOOLS_URL_TRACKED__) {
+        return;
+      }
+
+      loader.__PHASER_DEVTOOLS_URL_TRACKED__ = true;
+
+      if (typeof loader.on === "function") {
+        ["filecomplete", "load", "addfile", "loaderror"].forEach(function (eventName) {
+          try {
+            loader.on(eventName, function () {
+              for (var index = 0; index < arguments.length; index += 1) {
+                if (arguments[index] && typeof arguments[index] === "object") {
+                  rememberOriginalTextureUrl(arguments[index]);
+                  rememberLoaderEvent(eventName, arguments[index]);
+                }
+              }
+            });
+          } catch (error) {
+            // Loader event signatures vary by Phaser version.
+          }
+        });
+      }
+    }
+
     function serializeLoad(scene) {
       var loader = scene && scene.load ? scene.load : null;
+      var registry = getRegistry();
       var progress = toNumber(loader && loader.progress);
       var totalComplete = toNumber(loader && loader.totalComplete);
       var totalFailed = toNumber(loader && loader.totalFailed);
@@ -420,6 +627,8 @@
       var isLoading = null;
 
       if (loader && typeof loader.isLoading === "function") {
+        attachLoaderUrlTracker(loader);
+
         try {
           isLoading = toBoolean(loader.isLoading());
         } catch (error) {
@@ -444,7 +653,13 @@
         totalComplete: totalComplete,
         totalFailed: totalFailed,
         totalToLoad: totalToLoad,
-        isLoading: isLoading
+        isLoading: isLoading,
+        files: {
+          pending: collectLoaderFileGroup(loader, ["list", "queue", "pendingFiles", "_pending"]),
+          inflight: collectLoaderFileGroup(loader, ["inflight", "inflightQueue", "_inflight"]),
+          failed: collectLoaderFileGroup(loader, ["failed", "failedFiles", "_failed"])
+        },
+        events: registry.loaderEvents.slice(-30)
       };
     }
 
@@ -565,6 +780,88 @@
       };
     }
 
+    function serializeVector(vector) {
+      if (!vector || typeof vector !== "object") {
+        return null;
+      }
+
+      return {
+        x: toNumber(vector.x),
+        y: toNumber(vector.y)
+      };
+    }
+
+    function serializeArcadeWorld(scene) {
+      var physics = scene && scene.physics ? scene.physics : null;
+      var world = physics && physics.world ? physics.world : null;
+      var bounds = world && world.bounds ? world.bounds : null;
+
+      if (!world) {
+        return null;
+      }
+
+      return {
+        system: "arcade",
+        paused: toBoolean(world.isPaused) || toBoolean(world.pause),
+        gravity: serializeVector(world.gravity),
+        bounds: bounds
+          ? {
+              x: toNumber(bounds.x),
+              y: toNumber(bounds.y),
+              width: toNumber(bounds.width),
+              height: toNumber(bounds.height)
+            }
+          : null,
+        bodiesCount: world.bodies && typeof world.bodies.size === "number" ? world.bodies.size : null,
+        staticBodiesCount:
+          world.staticBodies && typeof world.staticBodies.size === "number" ? world.staticBodies.size : null
+      };
+    }
+
+    function serializeArcadeBody(body) {
+      if (!body || typeof body !== "object") {
+        return null;
+      }
+
+      return {
+        system: "arcade",
+        enabled: toBoolean(body.enable),
+        x: toNumber(body.x),
+        y: toNumber(body.y),
+        width: toNumber(body.width),
+        height: toNumber(body.height),
+        velocity: serializeVector(body.velocity),
+        acceleration: serializeVector(body.acceleration),
+        gravity: serializeVector(body.gravity),
+        immovable: toBoolean(body.immovable),
+        allowGravity: toBoolean(body.allowGravity),
+        moves: toBoolean(body.moves),
+        blocked: body.blocked
+          ? {
+              up: toBoolean(body.blocked.up),
+              down: toBoolean(body.blocked.down),
+              left: toBoolean(body.blocked.left),
+              right: toBoolean(body.blocked.right)
+            }
+          : null,
+        touching: body.touching
+          ? {
+              up: toBoolean(body.touching.up),
+              down: toBoolean(body.touching.down),
+              left: toBoolean(body.touching.left),
+              right: toBoolean(body.touching.right)
+            }
+          : null
+      };
+    }
+
+    function serializePhysics(scene, displayObject) {
+      return {
+        world: serializeArcadeWorld(scene),
+        selectedBody: displayObject ? serializeArcadeBody(displayObject.body) : null
+      };
+    }
+
     function getSceneActions(scene) {
       var statusLabel = getSceneStatusLabel(scene);
       var active = getSceneActive(scene) === true;
@@ -597,6 +894,7 @@
         isSleeping: getSceneSleeping(scene),
         load: serializeLoad(scene),
         camera: serializeCamera(scene && scene.cameras ? scene.cameras.main : null, scene),
+        physics: serializePhysics(scene, null),
         sceneActions: getSceneActions(scene)
       };
     }
@@ -675,6 +973,324 @@
       return null;
     }
 
+    function getTextureFrameMap(texture) {
+      if (!texture || typeof texture !== "object") {
+        return {};
+      }
+
+      return texture.frames && typeof texture.frames === "object" ? texture.frames : {};
+    }
+
+    function getTextureKeys(textureManager) {
+      if (!textureManager || typeof textureManager !== "object") {
+        return [];
+      }
+
+      if (typeof textureManager.getTextureKeys === "function") {
+        try {
+          var keys = textureManager.getTextureKeys();
+
+          if (Array.isArray(keys)) {
+            return keys.filter(function (key) {
+              return typeof key === "string" && key.length > 0;
+            });
+          }
+        } catch (error) {
+          // Fall back to manager internals below.
+        }
+      }
+
+      if (textureManager.list && typeof textureManager.list === "object") {
+        return Object.keys(textureManager.list);
+      }
+
+      return [];
+    }
+
+    function getTextureByKey(textureManager, textureKey) {
+      if (!textureManager || !textureKey) {
+        return null;
+      }
+
+      if (typeof textureManager.get === "function") {
+        try {
+          return textureManager.get(textureKey);
+        } catch (error) {
+          // Fall back below.
+        }
+      }
+
+      return textureManager.list && textureManager.list[textureKey] ? textureManager.list[textureKey] : null;
+    }
+
+    function getTextureSource(texture) {
+      if (!texture) {
+        return null;
+      }
+
+      if (Array.isArray(texture.source) && texture.source.length > 0) {
+        return texture.source[0];
+      }
+
+      return texture.source || null;
+    }
+
+    function getTexturePreviewCandidates(source) {
+      var candidates = [];
+
+      if (!source) {
+        return candidates;
+      }
+
+      [
+        source.image,
+        source.source,
+        source.data,
+        source.dataSource,
+        source.canvas,
+        source.context && source.context.canvas,
+        source.image && source.image.canvas
+      ].forEach(function (candidate) {
+        if (candidate && candidates.indexOf(candidate) === -1) {
+          candidates.push(candidate);
+        }
+      });
+
+      return candidates;
+    }
+
+    function getImageUrl(image) {
+      if (!image) {
+        return null;
+      }
+
+      if (typeof image.currentSrc === "string" && image.currentSrc.length > 0) {
+        return image.currentSrc;
+      }
+
+      if (typeof image.src === "string" && image.src.length > 0) {
+        return image.src;
+      }
+
+      return null;
+    }
+
+    function getImagePreviewDataUrl(source, image) {
+      if (!image || typeof document !== "object" || typeof document.createElement !== "function") {
+        return null;
+      }
+
+      try {
+        var width =
+          toNumber(source && source.width) ||
+          toNumber(image.naturalWidth) ||
+          toNumber(image.videoWidth) ||
+          toNumber(image.width);
+        var height =
+          toNumber(source && source.height) ||
+          toNumber(image.naturalHeight) ||
+          toNumber(image.videoHeight) ||
+          toNumber(image.height);
+
+        if (!width || !height) {
+          return null;
+        }
+
+        var maxSize = 256;
+        var scale = Math.min(1, maxSize / Math.max(width, height));
+        var canvas = document.createElement("canvas");
+
+        canvas.width = Math.max(1, Math.round(width * scale));
+        canvas.height = Math.max(1, Math.round(height * scale));
+        canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+        return canvas.toDataURL("image/png");
+      } catch (error) {
+        return null;
+      }
+    }
+
+    function getTexturePreview(source, preferDataUrl) {
+      var candidates = getTexturePreviewCandidates(source);
+      var index;
+      var preview;
+
+      if (preferDataUrl) {
+        for (index = 0; index < candidates.length; index += 1) {
+          preview = getImagePreviewDataUrl(source, candidates[index]);
+
+          if (preview) {
+            return preview;
+          }
+        }
+      }
+
+      for (index = 0; index < candidates.length; index += 1) {
+        preview = getImageUrl(candidates[index]);
+
+        if (preview) {
+          return preview;
+        }
+      }
+
+      if (!preferDataUrl) {
+        for (index = 0; index < candidates.length; index += 1) {
+          preview = getImagePreviewDataUrl(source, candidates[index]);
+
+          if (preview) {
+            return preview;
+          }
+        }
+      }
+
+      return null;
+    }
+
+    function getTexturePreviewStatus(source, preview) {
+      var candidates = getTexturePreviewCandidates(source);
+      var sourceTypes = candidates.map(function (candidate) {
+        return (
+          toStringValue(candidate && candidate.tagName) ||
+          toStringValue(candidate && candidate.constructor && candidate.constructor.name) ||
+          "Object"
+        );
+      });
+
+      if (!preview) {
+        return {
+          state: "unavailable",
+          detail: candidates.length > 0
+            ? "Found " + candidates.length + " source candidate(s), but none were drawable/readable."
+            : "No image/canvas source candidate found.",
+          sourceTypes: sourceTypes
+        };
+      }
+
+      if (preview.indexOf("data:image/") === 0) {
+        return {
+          state: "thumbnail",
+          detail: "Generated a readable thumbnail from the texture source.",
+          sourceTypes: sourceTypes
+        };
+      }
+
+      if (preview.indexOf("blob:") === 0) {
+        return {
+          state: "blob-url",
+          detail: "Only a blob URL was available; Chrome may block it in the extension panel.",
+          sourceTypes: sourceTypes
+        };
+      }
+
+      return {
+        state: "source-url",
+        detail: "Using the browser image source URL directly.",
+        sourceTypes: sourceTypes
+      };
+    }
+
+    function getTextureSourceUrl(source) {
+      var candidates = getTexturePreviewCandidates(source);
+      var index;
+      var url;
+
+      for (index = 0; index < candidates.length; index += 1) {
+        url = getImageUrl(candidates[index]);
+
+        if (url) {
+          return url;
+        }
+      }
+
+      if (source && typeof source.url === "string" && source.url.length > 0) {
+        return source.url;
+      }
+
+      return null;
+    }
+
+    function getTextureOriginalUrl(textureKey, sourceUrl) {
+      var registry = getRegistry();
+
+      if (textureKey && registry.originalTextureUrls[textureKey]) {
+        return registry.originalTextureUrls[textureKey];
+      }
+
+      if (sourceUrl && sourceUrl.indexOf("blob:") !== 0) {
+        return sourceUrl;
+      }
+
+      return null;
+    }
+
+    function serializeTextureFrame(frameName, frame) {
+      return {
+        name: frameName,
+        width: toNumber(frame && (frame.width || frame.cutWidth || frame.realWidth)),
+        height: toNumber(frame && (frame.height || frame.cutHeight || frame.realHeight)),
+        x: toNumber(frame && (frame.x || frame.cutX)),
+        y: toNumber(frame && (frame.y || frame.cutY))
+      };
+    }
+
+    function countTextureUsage(game, textureKey) {
+      var count = 0;
+
+      getScenes(game).forEach(function (scene) {
+        var objects = [];
+
+        flattenSceneObjects(
+          scene && scene.sys && scene.sys.settings ? scene.sys.settings.key : null,
+          getDisplayList(scene),
+          0,
+          [],
+          objects
+        );
+
+        objects.forEach(function (summary) {
+          if (summary.textureKey === textureKey) {
+            count += 1;
+          }
+        });
+      });
+
+      return count;
+    }
+
+    function serializeTextureSummary(game, textureKey) {
+      var textureManager = game && game.textures ? game.textures : null;
+      var texture = getTextureByKey(textureManager, textureKey);
+      var source = getTextureSource(texture);
+      var frameMap = getTextureFrameMap(texture);
+
+      return {
+        key: textureKey,
+        sourceCount: Array.isArray(texture && texture.source) ? texture.source.length : texture && texture.source ? 1 : 0,
+        frameCount: Object.keys(frameMap).length,
+        width: toNumber(source && (source.width || source.image && source.image.width)),
+        height: toNumber(source && (source.height || source.image && source.image.height)),
+        usageCount: countTextureUsage(game, textureKey)
+      };
+    }
+
+    function serializeTextureDetails(game, textureKey) {
+      var summary = serializeTextureSummary(game, textureKey);
+      var textureManager = game && game.textures ? game.textures : null;
+      var texture = getTextureByKey(textureManager, textureKey);
+      var frameMap = getTextureFrameMap(texture);
+
+      summary.frames = Object.keys(frameMap).map(function (frameName) {
+        return serializeTextureFrame(frameName, frameMap[frameName]);
+      });
+      var textureSource = getTextureSource(texture);
+
+      summary.preview = getTexturePreview(textureSource, true);
+      summary.previewStatus = getTexturePreviewStatus(textureSource, summary.preview);
+      summary.sourceUrl = getTextureSourceUrl(textureSource);
+      summary.originalUrl = getTextureOriginalUrl(textureKey, summary.sourceUrl);
+
+      return summary;
+    }
+
     function pathToString(pathSegments) {
       return pathSegments.join(".");
     }
@@ -704,6 +1320,7 @@
         depth: depth,
         name: toStringValue(displayObject && displayObject.name),
         type: getObjectType(displayObject),
+        textureKey: getTextureKey(displayObject),
         x: toNumber(displayObject && displayObject.x),
         y: toNumber(displayObject && displayObject.y),
         visible: toBoolean(displayObject && displayObject.visible),
@@ -822,6 +1439,7 @@
         rotation: toNumber(displayObject.rotation),
         textureKey: getTextureKey(displayObject),
         childCount: getObjectChildren(displayObject).length,
+        physicsBody: serializeArcadeBody(displayObject.body),
         originalValues: baseline,
         changedProperties: getChangedEditableProperties(displayObject, baseline),
         canReset: !!baseline
@@ -921,6 +1539,95 @@
         width: bounds.width * scaleX,
         height: bounds.height * scaleY
       };
+    }
+
+    function getPointScreenPosition(game, x, y) {
+      var canvas = game && game.canvas;
+
+      if (!canvas || typeof canvas.getBoundingClientRect !== "function") {
+        return null;
+      }
+
+      var rect = canvas.getBoundingClientRect();
+      var metrics = getScaleMetrics(game);
+
+      if (!metrics.width || !metrics.height || !rect.width || !rect.height) {
+        return null;
+      }
+
+      return {
+        left: rect.left + x * (rect.width / metrics.width),
+        top: rect.top + y * (rect.height / metrics.height)
+      };
+    }
+
+    function getCameraScreenBounds(game, camera) {
+      var canvas = game && game.canvas;
+
+      if (!canvas || !camera || typeof canvas.getBoundingClientRect !== "function") {
+        return null;
+      }
+
+      var rect = canvas.getBoundingClientRect();
+      var metrics = getScaleMetrics(game);
+
+      if (!metrics.width || !metrics.height || !rect.width || !rect.height) {
+        return null;
+      }
+
+      var scaleX = rect.width / metrics.width;
+      var scaleY = rect.height / metrics.height;
+
+      return {
+        left: rect.left + (toNumber(camera.x) || 0) * scaleX,
+        top: rect.top + (toNumber(camera.y) || 0) * scaleY,
+        width: (toNumber(camera.width) || 0) * scaleX,
+        height: (toNumber(camera.height) || 0) * scaleY
+      };
+    }
+
+    function getWorldViewScreenBounds(game, camera) {
+      var worldView = camera && camera.worldView ? camera.worldView : null;
+
+      if (!worldView) {
+        return null;
+      }
+
+      var topLeft = getPointScreenPosition(game, toNumber(worldView.x) || 0, toNumber(worldView.y) || 0);
+      var metrics = getScaleMetrics(game);
+      var canvas = game && game.canvas;
+
+      if (!topLeft || !canvas || typeof canvas.getBoundingClientRect !== "function") {
+        return null;
+      }
+
+      var rect = canvas.getBoundingClientRect();
+
+      if (!metrics.width || !metrics.height || !rect.width || !rect.height) {
+        return null;
+      }
+
+      return {
+        left: topLeft.left,
+        top: topLeft.top,
+        width: (toNumber(worldView.width) || 0) * (rect.width / metrics.width),
+        height: (toNumber(worldView.height) || 0) * (rect.height / metrics.height)
+      };
+    }
+
+    function getObjectOriginScreenPosition(game, displayObject) {
+      var bounds = getObjectBounds(displayObject);
+
+      if (!bounds || !displayObject) {
+        return null;
+      }
+
+      var originX = toNumber(displayObject.originX);
+      var originY = toNumber(displayObject.originY);
+      var pointX = bounds.x + bounds.width * (originX === null ? 0.5 : originX);
+      var pointY = bounds.y + bounds.height * (originY === null ? 0.5 : originY);
+
+      return getPointScreenPosition(game, pointX, pointY);
     }
 
     function getSceneCameras(scene) {
@@ -1066,6 +1773,21 @@
     function ensureOverlayInfrastructure() {
       var registry = getRegistry();
 
+      if (!registry.__debugOverlayContainer || !registry.__debugOverlayContainer.isConnected) {
+        var container = document.createElement("div");
+
+        container.style.position = "fixed";
+        container.style.left = "0";
+        container.style.top = "0";
+        container.style.width = "0";
+        container.style.height = "0";
+        container.style.pointerEvents = "none";
+        container.style.zIndex = "2147483647";
+
+        document.documentElement.appendChild(container);
+        registry.__debugOverlayContainer = container;
+      }
+
       if (!registry.__overlayElement || !registry.__overlayElement.isConnected) {
         var overlay = document.createElement("div");
 
@@ -1085,46 +1807,218 @@
         registry.__overlayElement = overlay;
       }
 
+      function makeOverlayElement(className, borderColor, fillColor) {
+        var element = document.createElement("div");
+
+        element.className = className;
+        element.style.position = "fixed";
+        element.style.left = "0";
+        element.style.top = "0";
+        element.style.width = "0";
+        element.style.height = "0";
+        element.style.border = "1px solid " + borderColor;
+        element.style.background = fillColor || "transparent";
+        element.style.pointerEvents = "none";
+        element.style.display = "none";
+        element.style.borderRadius = "2px";
+
+        registry.__debugOverlayContainer.appendChild(element);
+        return element;
+      }
+
+      function ensureOverlayPool() {
+        if (!registry.__debugOverlayPool) {
+          registry.__debugOverlayPool = [];
+        }
+
+        return registry.__debugOverlayPool;
+      }
+
+      function hideOverlayPool(pool, startIndex) {
+        for (var index = startIndex; index < pool.length; index += 1) {
+          pool[index].style.display = "none";
+        }
+      }
+
+      function drawBox(pool, index, bounds, className, borderColor, fillColor) {
+        if (!bounds || bounds.width <= 0 || bounds.height <= 0) {
+          return index;
+        }
+
+        if (!pool[index]) {
+          pool[index] = makeOverlayElement(className, borderColor, fillColor);
+        }
+
+        var element = pool[index];
+        element.className = className;
+        element.style.borderColor = borderColor;
+        element.style.background = fillColor || "transparent";
+        element.style.display = "block";
+        element.style.left = bounds.left + "px";
+        element.style.top = bounds.top + "px";
+        element.style.width = bounds.width + "px";
+        element.style.height = bounds.height + "px";
+        return index + 1;
+      }
+
+      function drawOrigin(pool, index, point) {
+        if (!point) {
+          return index;
+        }
+
+        if (!pool[index]) {
+          pool[index] = makeOverlayElement("phaser-devtools-origin", "#ffcc00", "rgba(255, 204, 0, 0.22)");
+        }
+
+        var element = pool[index];
+        element.className = "phaser-devtools-origin";
+        element.style.borderColor = "#ffcc00";
+        element.style.background = "rgba(255, 204, 0, 0.32)";
+        element.style.borderRadius = "999px";
+        element.style.display = "block";
+        element.style.left = point.left - 3 + "px";
+        element.style.top = point.top - 3 + "px";
+        element.style.width = "6px";
+        element.style.height = "6px";
+        return index + 1;
+      }
+
+      function drawDebugOverlays(game, scene, selectedObject) {
+        var options = registry.uiState.overlays || {};
+        var pool = ensureOverlayPool();
+        var index = 0;
+
+        if (!game || !scene) {
+          hideOverlayPool(pool, 0);
+          return;
+        }
+
+        if (options.selectedBounds && selectedObject) {
+          index = drawBox(
+            pool,
+            index,
+            getObjectScreenBounds(game, selectedObject),
+            "phaser-devtools-selected-bounds",
+            "#00d0ff",
+            "rgba(0, 208, 255, 0.06)"
+          );
+        }
+
+        if (options.allBounds || options.origins) {
+          var summaries = [];
+
+          flattenSceneObjects(
+            scene && scene.sys && scene.sys.settings ? scene.sys.settings.key : null,
+            getDisplayList(scene),
+            0,
+            [],
+            summaries
+          );
+
+          summaries.slice(0, 250).forEach(function (summary) {
+            var displayObject = getDisplayObjectByPath(scene, summary.path);
+
+            if (!displayObject || displayObject.visible === false) {
+              return;
+            }
+
+            if (options.allBounds) {
+              index = drawBox(
+                pool,
+                index,
+                getObjectScreenBounds(game, displayObject),
+                "phaser-devtools-object-bounds",
+                "rgba(124, 179, 255, 0.8)",
+                "rgba(124, 179, 255, 0.035)"
+              );
+            }
+
+            if (options.origins) {
+              index = drawOrigin(pool, index, getObjectOriginScreenPosition(game, displayObject));
+            }
+          });
+        }
+
+        if (options.cameraViewport || options.cameraWorldView) {
+          var camera = scene && scene.cameras ? scene.cameras.main : null;
+
+          if (options.cameraViewport) {
+            index = drawBox(
+              pool,
+              index,
+              getCameraScreenBounds(game, camera),
+              "phaser-devtools-camera-viewport",
+              "#a855f7",
+              "rgba(168, 85, 247, 0.06)"
+            );
+          }
+
+          if (options.cameraWorldView) {
+            index = drawBox(
+              pool,
+              index,
+              getWorldViewScreenBounds(game, camera),
+              "phaser-devtools-camera-world",
+              "#f97316",
+              "rgba(249, 115, 22, 0.06)"
+            );
+          }
+        }
+
+        hideOverlayPool(pool, index);
+      }
+
       if (!registry.__overlayLoopStarted) {
         registry.__overlayLoopStarted = true;
 
         function updateOverlay() {
           var overlay = registry.__overlayElement;
           var highlight = registry.uiState.highlight;
+          var options = registry.uiState.overlays || {};
+          var overlaySceneKey = options.sceneKey || (highlight && highlight.sceneKey);
+          var overlayObjectPath = options.objectPath || (highlight && highlight.objectPath);
 
-          if (!overlay || !highlight) {
+          if (!overlay || (!highlight && !overlaySceneKey)) {
             if (overlay) {
               overlay.style.display = "none";
             }
 
+            drawDebugOverlays(null, null, null);
             window.requestAnimationFrame(updateOverlay);
             return;
           }
 
           var game = findGame();
-          var scene = game ? getSceneByKey(game, highlight.sceneKey) : null;
-          var displayObject = scene ? getDisplayObjectByPath(scene, highlight.objectPath) : null;
+          var scene = game ? getSceneByKey(game, overlaySceneKey) : null;
+          var displayObject = scene && overlayObjectPath ? getDisplayObjectByPath(scene, overlayObjectPath) : null;
           var screenBounds = game && displayObject ? getObjectScreenBounds(game, displayObject) : null;
 
-          if (!screenBounds || screenBounds.width <= 0 || screenBounds.height <= 0) {
+          if (
+            options.selectedBounds === false ||
+            !screenBounds ||
+            screenBounds.width <= 0 ||
+            screenBounds.height <= 0
+          ) {
             overlay.style.display = "none";
-            window.requestAnimationFrame(updateOverlay);
-            return;
-          }
-
-          if (highlight.isChanged) {
+          } else if (highlight && highlight.isChanged) {
             overlay.style.borderColor = "#22c55e";
             overlay.style.boxShadow = "0 0 0 9999px rgba(34, 197, 94, 0.1)";
+            overlay.style.display = "block";
+            overlay.style.left = screenBounds.left + "px";
+            overlay.style.top = screenBounds.top + "px";
+            overlay.style.width = screenBounds.width + "px";
+            overlay.style.height = screenBounds.height + "px";
           } else {
             overlay.style.borderColor = "#00d0ff";
             overlay.style.boxShadow = "0 0 0 9999px rgba(0, 208, 255, 0.08)";
+            overlay.style.display = "block";
+            overlay.style.left = screenBounds.left + "px";
+            overlay.style.top = screenBounds.top + "px";
+            overlay.style.width = screenBounds.width + "px";
+            overlay.style.height = screenBounds.height + "px";
           }
 
-          overlay.style.display = "block";
-          overlay.style.left = screenBounds.left + "px";
-          overlay.style.top = screenBounds.top + "px";
-          overlay.style.width = screenBounds.width + "px";
-          overlay.style.height = screenBounds.height + "px";
+          drawDebugOverlays(game, scene, displayObject);
 
           window.requestAnimationFrame(updateOverlay);
         }
@@ -1253,6 +2147,28 @@
 
       if (detectedGame) {
         attachCanvasPicker(detectedGame);
+        getScenes(detectedGame).forEach(function (scene) {
+          var loader = scene && scene.load ? scene.load : null;
+
+          [
+            "list",
+            "queue",
+            "pendingFiles",
+            "_pending",
+            "inflight",
+            "inflightQueue",
+            "_inflight",
+            "failed",
+            "failedFiles",
+            "_failed"
+          ].forEach(function (name) {
+            try {
+              collectLoaderFilesFromCollection(loader && loader[name], [], {});
+            } catch (error) {
+              // Best-effort URL backfill only.
+            }
+          });
+        });
 
         if (registry.games.indexOf(detectedGame) === -1) {
           registry.games.push(detectedGame);
@@ -1298,11 +2214,16 @@
       var game = findGame();
       var scene = game ? getSceneByKey(game, sceneKey) : null;
 
+      if (scene && scene.load) {
+        attachLoaderUrlTracker(scene.load);
+      }
+
       return {
         sceneKey: sceneKey,
         state: scene ? serializeScene(scene) : null,
         load: scene ? serializeLoad(scene) : null,
         camera: scene ? serializeCamera(scene.cameras && scene.cameras.main, scene) : null,
+        physics: scene ? serializePhysics(scene, null) : null,
         fps: game ? serializeFps(game) : null
       };
     }
@@ -1327,6 +2248,36 @@
       return {
         sceneKey: sceneKey,
         objects: objects
+      };
+    }
+
+    function getTextureCache() {
+      ensureInteractiveTools();
+
+      var game = findGame();
+      var textureManager = game && game.textures ? game.textures : null;
+      var keys = getTextureKeys(textureManager);
+
+      return {
+        textures: keys.map(function (textureKey) {
+          return serializeTextureSummary(game, textureKey);
+        })
+      };
+    }
+
+    function getTextureDetails(textureKey) {
+      ensureInteractiveTools();
+
+      var game = findGame();
+
+      if (!game || !game.textures || !textureKey) {
+        return {
+          texture: null
+        };
+      }
+
+      return {
+        texture: serializeTextureDetails(game, textureKey)
       };
     }
 
@@ -1855,6 +2806,9 @@
         isChanged: !!isChanged
       };
 
+      registry.uiState.overlays.sceneKey = sceneKey;
+      registry.uiState.overlays.objectPath = objectPath;
+
       return {
         highlighted: true
       };
@@ -1867,6 +2821,210 @@
 
       return {
         highlighted: false
+      };
+    }
+
+    function getDebugOverlayOptions() {
+      var registry = getRegistry();
+      var overlays = registry.uiState.overlays || {};
+
+      return {
+        selectedBounds: overlays.selectedBounds !== false,
+        allBounds: overlays.allBounds === true,
+        origins: overlays.origins === true,
+        cameraViewport: overlays.cameraViewport === true,
+        cameraWorldView: overlays.cameraWorldView === true,
+        sceneKey: overlays.sceneKey || null,
+        objectPath: overlays.objectPath || null
+      };
+    }
+
+    function setDebugOverlayOptions(options) {
+      ensureInteractiveTools();
+
+      var registry = getRegistry();
+      var current = getDebugOverlayOptions();
+      var next = {};
+
+      ["selectedBounds", "allBounds", "origins", "cameraViewport", "cameraWorldView"].forEach(function (key) {
+        next[key] = options && options[key] !== undefined ? !!options[key] : !!current[key];
+      });
+
+      next.sceneKey = options && options.sceneKey !== undefined ? options.sceneKey : current.sceneKey;
+      next.objectPath = options && options.objectPath !== undefined ? options.objectPath : current.objectPath;
+
+      registry.uiState.overlays = next;
+      return getDebugOverlayOptions();
+    }
+
+    function canOwnConsoleGlobal(name) {
+      var registry = getRegistry();
+
+      if (!registry.__consoleOwnedGlobals) {
+        registry.__consoleOwnedGlobals = {};
+      }
+
+      return window[name] === undefined || registry.__consoleOwnedGlobals[name] === true;
+    }
+
+    function defineConsoleGlobal(name, getValue) {
+      if (!canOwnConsoleGlobal(name)) {
+        return false;
+      }
+
+      try {
+        Object.defineProperty(window, name, {
+          configurable: true,
+          enumerable: false,
+          get: function () {
+            return getValue();
+          }
+        });
+
+        getRegistry().__consoleOwnedGlobals[name] = true;
+
+        return true;
+      } catch (error) {
+        return false;
+      }
+    }
+
+    function installConsoleNamespace() {
+      var registry = getRegistry();
+
+      if (window.$phaserDevTools && registry.__consoleOwnedGlobals && registry.__consoleOwnedGlobals.$phaserDevTools) {
+        return true;
+      }
+
+      if (window.$phaserDevTools !== undefined && !(registry.__consoleOwnedGlobals && registry.__consoleOwnedGlobals.$phaserDevTools)) {
+        return false;
+      }
+
+      var namespace = {
+        __PHASER_DEVTOOLS_OWNED__: true,
+        getGame: function () {
+          return findGame();
+        },
+        getScene: function (key) {
+          var game = findGame();
+          var sceneKey = key || registry.uiState.console.sceneKey;
+          return game && sceneKey ? getSceneByKey(game, sceneKey) : null;
+        },
+        getSelectedObject: function () {
+          var game = findGame();
+          var scene = game && registry.uiState.console.sceneKey
+            ? getSceneByKey(game, registry.uiState.console.sceneKey)
+            : null;
+
+          return scene && registry.uiState.console.objectPath
+            ? getDisplayObjectByPath(scene, registry.uiState.console.objectPath)
+            : null;
+        },
+        getSelectedCamera: function () {
+          var scene = namespace.getScene();
+          return scene && scene.cameras ? scene.cameras.main : null;
+        },
+        inspectSelected: function () {
+          var selected = namespace.getSelectedObject();
+
+          if (selected && typeof inspect === "function") {
+            inspect(selected);
+          }
+
+          return selected;
+        }
+      };
+
+      try {
+        Object.defineProperty(window, "$phaserDevTools", {
+          configurable: true,
+          enumerable: false,
+          value: namespace
+        });
+        if (!registry.__consoleOwnedGlobals) {
+          registry.__consoleOwnedGlobals = {};
+        }
+        registry.__consoleOwnedGlobals.$phaserDevTools = true;
+        return true;
+      } catch (error) {
+        // If the safe namespace is unavailable, short globals are still attempted below.
+      }
+
+      return false;
+    }
+
+    function exportConsoleHelpers(sceneKey, objectPath) {
+      ensureInteractiveTools();
+
+      var registry = getRegistry();
+
+      registry.uiState.console = {
+        enabled: true,
+        sceneKey: sceneKey || null,
+        objectPath: objectPath || null
+      };
+
+      var exported = installConsoleNamespace() ? ["$phaserDevTools"] : [];
+
+      if (defineConsoleGlobal("$phaserGame", function () {
+        return findGame();
+      })) {
+        exported.push("$phaserGame");
+      }
+
+      if (defineConsoleGlobal("$phaserScene", function () {
+        var game = findGame();
+        return game && registry.uiState.console.sceneKey
+          ? getSceneByKey(game, registry.uiState.console.sceneKey)
+          : null;
+      })) {
+        exported.push("$phaserScene");
+      }
+
+      if (defineConsoleGlobal("$phaserObject", function () {
+        var game = findGame();
+        var scene = game && registry.uiState.console.sceneKey
+          ? getSceneByKey(game, registry.uiState.console.sceneKey)
+          : null;
+        return scene && registry.uiState.console.objectPath
+          ? getDisplayObjectByPath(scene, registry.uiState.console.objectPath)
+          : null;
+      })) {
+        exported.push("$phaserObject");
+      }
+
+      if (defineConsoleGlobal("$phaserCamera", function () {
+        var game = findGame();
+        var scene = game && registry.uiState.console.sceneKey
+          ? getSceneByKey(game, registry.uiState.console.sceneKey)
+          : null;
+        return scene && scene.cameras ? scene.cameras.main : null;
+      })) {
+        exported.push("$phaserCamera");
+      }
+
+      if (window.console && typeof window.console.info === "function") {
+        var exportedGame = findGame();
+        var exportedScene = exportedGame && registry.uiState.console.sceneKey
+          ? getSceneByKey(exportedGame, registry.uiState.console.sceneKey)
+          : null;
+        var exportedObject = exportedScene && registry.uiState.console.objectPath
+          ? getDisplayObjectByPath(exportedScene, registry.uiState.console.objectPath)
+          : null;
+
+        window.console.info("[Phaser DevTools] Console helpers exported", {
+          helpers: exported,
+          game: exportedGame,
+          scene: exportedScene,
+          object: exportedObject,
+          camera: exportedScene && exportedScene.cameras ? exportedScene.cameras.main : null
+        });
+      }
+
+      return {
+        exported: exported,
+        sceneKey: sceneKey || null,
+        objectPath: objectPath || null
       };
     }
 
@@ -1914,6 +3072,14 @@
 
       if (command.type === "sceneObjects") {
         return { ok: true, data: getSceneObjects(command.sceneKey) };
+      }
+
+      if (command.type === "textureCache") {
+        return { ok: true, data: getTextureCache() };
+      }
+
+      if (command.type === "textureDetails") {
+        return { ok: true, data: getTextureDetails(command.textureKey) };
       }
 
       if (command.type === "objectDetails") {
@@ -1977,6 +3143,18 @@
         return { ok: true, data: clearHighlight() };
       }
 
+      if (command.type === "getDebugOverlayOptions") {
+        return { ok: true, data: getDebugOverlayOptions() };
+      }
+
+      if (command.type === "setDebugOverlayOptions") {
+        return { ok: true, data: setDebugOverlayOptions(command.options) };
+      }
+
+      if (command.type === "exportConsoleHelpers") {
+        return { ok: true, data: exportConsoleHelpers(command.sceneKey, command.objectPath) };
+      }
+
       if (command.type === "setPickMode") {
         return { ok: true, data: setPickMode(command.sceneKey, command.enabled) };
       }
@@ -2033,6 +3211,14 @@
 
     getSceneObjects: function (sceneKey) {
       return evaluateCommand({ type: "sceneObjects", sceneKey: sceneKey });
+    },
+
+    getTextureCache: function () {
+      return evaluateCommand({ type: "textureCache" });
+    },
+
+    getTextureDetails: function (textureKey) {
+      return evaluateCommand({ type: "textureDetails", textureKey: textureKey });
     },
 
     getObjectDetails: function (sceneKey, objectPath) {
@@ -2109,6 +3295,25 @@
 
     clearHighlight: function () {
       return evaluateCommand({ type: "clearHighlight" });
+    },
+
+    getDebugOverlayOptions: function () {
+      return evaluateCommand({ type: "getDebugOverlayOptions" });
+    },
+
+    setDebugOverlayOptions: function (options) {
+      return evaluateCommand({
+        type: "setDebugOverlayOptions",
+        options: options
+      });
+    },
+
+    exportConsoleHelpers: function (sceneKey, objectPath) {
+      return evaluateCommand({
+        type: "exportConsoleHelpers",
+        sceneKey: sceneKey,
+        objectPath: objectPath
+      });
     },
 
     setPickMode: function (sceneKey, enabled) {
