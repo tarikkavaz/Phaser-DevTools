@@ -3,6 +3,8 @@
   var PATCH_FLAG = "__PHASER_DEVTOOLS_PATCHED__";
   var BOOT_PATCH_FLAG = "__PHASER_DEVTOOLS_BOOT_PATCHED__";
   var STEP_PATCH_FLAG = "__PHASER_DEVTOOLS_STEP_PATCHED__";
+  var LOADER_TRACK_FLAG = "__PHASER_DEVTOOLS_LOADER_TRACKED__";
+  var LOADER_EVENT_LIMIT = 80;
   var MONITOR_INTERVAL_MS = 250;
   var MONITOR_DURATION_MS = 30000;
 
@@ -15,6 +17,17 @@
 
     if (!Array.isArray(window[REGISTRY_KEY].games)) {
       window[REGISTRY_KEY].games = [];
+    }
+
+    if (
+      !window[REGISTRY_KEY].originalTextureUrls ||
+      typeof window[REGISTRY_KEY].originalTextureUrls !== "object"
+    ) {
+      window[REGISTRY_KEY].originalTextureUrls = {};
+    }
+
+    if (!Array.isArray(window[REGISTRY_KEY].loaderEvents)) {
+      window[REGISTRY_KEY].loaderEvents = [];
     }
 
     return window[REGISTRY_KEY];
@@ -42,6 +55,161 @@
     if (registry.games.indexOf(game) === -1) {
       registry.games.push(game);
     }
+
+    trackGameLoaders(game);
+  }
+
+  function getFileUrl(file) {
+    if (!file || typeof file !== "object") {
+      return null;
+    }
+
+    if (typeof file.url === "string" && file.url.length > 0) {
+      return file.url;
+    }
+
+    if (typeof file.src === "string" && file.src.length > 0) {
+      return file.src;
+    }
+
+    return null;
+  }
+
+  function rememberTextureUrl(file) {
+    var key = file && typeof file.key === "string" ? file.key : null;
+    var url = getFileUrl(file);
+
+    if (!key || !url || url.indexOf("blob:") === 0) {
+      return;
+    }
+
+    getRegistry().originalTextureUrls[key] = url;
+  }
+
+  function rememberLoaderEvent(eventName, file) {
+    if (!file || typeof file !== "object") {
+      return;
+    }
+
+    var registry = getRegistry();
+    var event = {
+      event: eventName,
+      key: typeof file.key === "string" ? file.key : null,
+      type: typeof file.type === "string" ? file.type : null,
+      url: getFileUrl(file),
+      time: Date.now()
+    };
+
+    if (!event.key && !event.url) {
+      return;
+    }
+
+    registry.loaderEvents.push(event);
+
+    if (registry.loaderEvents.length > LOADER_EVENT_LIMIT) {
+      registry.loaderEvents.splice(0, registry.loaderEvents.length - LOADER_EVENT_LIMIT);
+    }
+  }
+
+  function scanLoaderCollection(collection) {
+    if (!collection) {
+      return;
+    }
+
+    if (Array.isArray(collection)) {
+      collection.forEach(function (file) {
+        rememberTextureUrl(file);
+        rememberLoaderEvent("snapshot", file);
+      });
+      return;
+    }
+
+    if (typeof collection.each === "function") {
+      try {
+        collection.each(function (file) {
+          rememberTextureUrl(file);
+          rememberLoaderEvent("snapshot", file);
+        });
+        return;
+      } catch (error) {
+        // Fall through to object scanning.
+      }
+    }
+
+    if (typeof collection.entries === "function") {
+      try {
+        Array.from(collection.entries()).forEach(function (entry) {
+          var file = Array.isArray(entry) ? entry[1] : entry;
+          rememberTextureUrl(file);
+          rememberLoaderEvent("snapshot", file);
+        });
+        return;
+      } catch (error) {
+        // Fall through to object scanning.
+      }
+    }
+
+    if (typeof collection === "object") {
+      Object.keys(collection).forEach(function (key) {
+        try {
+          rememberTextureUrl(collection[key]);
+          rememberLoaderEvent("snapshot", collection[key]);
+        } catch (error) {
+          // Ignore inaccessible loader internals.
+        }
+      });
+    }
+  }
+
+  function trackLoader(loader) {
+    if (!loader || loader[LOADER_TRACK_FLAG]) {
+      return;
+    }
+
+    loader[LOADER_TRACK_FLAG] = true;
+
+    ["list", "queue", "pendingFiles", "_pending", "inflight", "inflightQueue", "_inflight"].forEach(function (name) {
+      scanLoaderCollection(loader[name]);
+    });
+
+    if (typeof loader.on === "function") {
+      ["addfile", "filecomplete", "load"].forEach(function (eventName) {
+        try {
+          loader.on(eventName, function () {
+            Array.prototype.forEach.call(arguments, function (argument) {
+              if (argument && typeof argument === "object") {
+                rememberTextureUrl(argument);
+                rememberLoaderEvent(eventName, argument);
+              }
+            });
+          });
+        } catch (error) {
+          // Loader event support varies by Phaser version.
+        }
+      });
+    }
+  }
+
+  function trackGameLoaders(game) {
+    var scenes = [];
+
+    try {
+      if (game && game.scene && Array.isArray(game.scene.scenes)) {
+        scenes = game.scene.scenes;
+      } else if (game && game.scene && typeof game.scene.getScenes === "function") {
+        scenes = game.scene.getScenes() || [];
+      }
+    } catch (error) {
+      scenes = [];
+    }
+
+    scenes.forEach(function (scene) {
+      try {
+        trackLoader(scene && scene.load);
+      } catch (error) {
+        // Ignore scene loader access issues.
+      }
+    });
   }
 
   function patchGamePrototype(GameCtor) {

@@ -159,6 +159,28 @@
                   Camera
                 </button>
                 <button
+                  id="tab-button-textures"
+                  class="inspector-tab-button"
+                  type="button"
+                  role="tab"
+                  aria-selected="false"
+                  aria-controls="tab-panel-textures"
+                  data-inspector-tab="textures"
+                >
+                  Textures
+                </button>
+                <button
+                  id="tab-button-physics"
+                  class="inspector-tab-button"
+                  type="button"
+                  role="tab"
+                  aria-selected="false"
+                  aria-controls="tab-panel-physics"
+                  data-inspector-tab="physics"
+                >
+                  Physics
+                </button>
+                <button
                   id="tab-button-fps"
                   class="inspector-tab-button"
                   type="button"
@@ -191,6 +213,28 @@
                       autocomplete="off"
                       spellcheck="false"
                     />
+                    <div id="overlay-controls" class="overlay-controls" aria-label="Debug overlays">
+                      <label class="overlay-control">
+                        <input type="checkbox" data-overlay-option="selectedBounds" checked />
+                        Selected bounds
+                      </label>
+                      <label class="overlay-control">
+                        <input type="checkbox" data-overlay-option="allBounds" />
+                        All bounds
+                      </label>
+                      <label class="overlay-control">
+                        <input type="checkbox" data-overlay-option="origins" />
+                        Origins
+                      </label>
+                      <label class="overlay-control">
+                        <input type="checkbox" data-overlay-option="cameraViewport" />
+                        Camera
+                      </label>
+                      <label class="overlay-control">
+                        <input type="checkbox" data-overlay-option="cameraWorldView" />
+                        World view
+                      </label>
+                    </div>
                     <div id="breadcrumbs" class="breadcrumbs"></div>
                   </div>
                   <div id="object-list" class="list object-list" role="list" tabindex="0"></div>
@@ -224,6 +268,36 @@
                   data-inspector-panel="camera"
                 >
                   <div id="camera-panel-content"></div>
+                </section>
+
+                <section
+                  id="tab-panel-textures"
+                  class="inspector-tab-panel hidden"
+                  role="tabpanel"
+                  aria-labelledby="tab-button-textures"
+                  data-inspector-panel="textures"
+                >
+                  <div class="texture-toolbar">
+                    <input
+                      id="texture-filter"
+                      class="tree-filter-input"
+                      type="search"
+                      placeholder="Filter textures"
+                      autocomplete="off"
+                      spellcheck="false"
+                    />
+                  </div>
+                  <div id="textures-panel-content"></div>
+                </section>
+
+                <section
+                  id="tab-panel-physics"
+                  class="inspector-tab-panel hidden"
+                  role="tabpanel"
+                  aria-labelledby="tab-button-physics"
+                  data-inspector-panel="physics"
+                >
+                  <div id="physics-panel-content"></div>
                 </section>
 
                 <section

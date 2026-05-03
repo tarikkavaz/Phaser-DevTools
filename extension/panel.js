@@ -3,7 +3,7 @@
   var PICK_POLL_INTERVAL_MS = 500;
   var SCENE_TELEMETRY_POLL_INTERVAL_MS = 250;
   var FPS_HISTORY_LIMIT = 60;
-  var INSPECTOR_TABS = ["displayObjects", "state", "load", "camera", "fps"];
+  var INSPECTOR_TABS = ["displayObjects", "state", "load", "camera", "textures", "physics", "fps"];
 
   var state = {
     snapshot: null,
@@ -28,6 +28,20 @@
     pendingInspectorFocus: null,
     pendingCameraFocus: null,
     pendingObjectListScrollTop: null,
+    textureCache: [],
+    textureDetails: null,
+    selectedTextureKey: null,
+    textureFilterQuery: "",
+    textureRequestId: 0,
+    pendingTextureListScrollTop: null,
+    overlayOptions: {
+      selectedBounds: true,
+      allBounds: false,
+      origins: false,
+      cameraViewport: false,
+      cameraWorldView: false
+    },
+    consoleHelpersEnabled: false,
     fpsHistoryByScene: {}
   };
 
@@ -58,10 +72,14 @@
     elements.objectList = document.getElementById("object-list");
     elements.objectListTitle = document.getElementById("object-list-title");
     elements.objectFilter = document.getElementById("object-filter");
+    elements.overlayControls = document.getElementById("overlay-controls");
     elements.breadcrumbs = document.getElementById("breadcrumbs");
     elements.statePanelContent = document.getElementById("state-panel-content");
     elements.loadPanelContent = document.getElementById("load-panel-content");
     elements.cameraPanelContent = document.getElementById("camera-panel-content");
+    elements.textureFilter = document.getElementById("texture-filter");
+    elements.texturesPanelContent = document.getElementById("textures-panel-content");
+    elements.physicsPanelContent = document.getElementById("physics-panel-content");
     elements.fpsPanelContent = document.getElementById("fps-panel-content");
 
     elements.tabButtons = {};
@@ -252,6 +270,16 @@
       !state.sceneObjects.some(function (displayObject) {
         return displayObject.changed;
       });
+
+    if (elements.overlayControls) {
+      Array.prototype.forEach.call(
+        elements.overlayControls.querySelectorAll("[data-overlay-option]"),
+        function (control) {
+          control.checked = state.overlayOptions[control.dataset.overlayOption] === true;
+          control.disabled = !state.selectedSceneKey;
+        }
+      );
+    }
   }
 
   function isObjectOutlined(sceneKey, objectPath) {
@@ -427,6 +455,15 @@
     return selectedScene ? selectedScene.camera : null;
   }
 
+  function getSelectedScenePhysics() {
+    if (state.sceneInspector && state.sceneInspector.physics) {
+      return state.sceneInspector.physics;
+    }
+
+    var selectedScene = getSelectedSceneSummary();
+    return selectedScene ? selectedScene.physics : null;
+  }
+
   function getFpsMetrics() {
     if (state.sceneInspector && state.sceneInspector.fps) {
       return state.sceneInspector.fps;
@@ -512,6 +549,10 @@
       state.snapshot.game.fps = inspectorData.fps;
     }
 
+    if (selectedScene && inspectorData.physics) {
+      selectedScene.physics = inspectorData.physics;
+    }
+
     recordFpsSample(inspectorData.sceneKey, inspectorData.fps);
   }
 
@@ -523,6 +564,9 @@
     state.sceneInspector = null;
     state.sceneObjects = [];
     state.objectDetails = null;
+    state.textureCache = [];
+    state.textureDetails = null;
+    state.selectedTextureKey = null;
     state.expandedPaths = {};
     state.fpsHistoryByScene = {};
   }
@@ -1256,6 +1300,15 @@
           titleActions.appendChild(resetButton);
         }
 
+        var exportButton = document.createElement("button");
+        exportButton.type = "button";
+        exportButton.className = "tree-row-copy-button";
+        exportButton.dataset.action = "exportConsole";
+        exportButton.dataset.objectPath = detailsForRow.path;
+        exportButton.textContent = "Export to console";
+        exportButton.title = "Expose selected Phaser refs in the page console";
+        titleActions.appendChild(exportButton);
+
         titleRow.appendChild(titleActions);
         mainButton.appendChild(titleRow);
       } else {
@@ -1486,6 +1539,298 @@
         createPlaceholder("No loader activity is currently reported for this scene.")
       );
     }
+
+    renderLoaderFileGroups(load.files || {});
+    renderLoaderEvents(load.events || []);
+  }
+
+  function renderLoaderFileGroups(files) {
+    var groups = [
+      ["failed", "Failed assets"],
+      ["inflight", "Inflight assets"],
+      ["pending", "Pending assets"]
+    ];
+    var anyFiles = false;
+
+    groups.forEach(function (group) {
+      var items = Array.isArray(files[group[0]]) ? files[group[0]] : [];
+      var section = document.createElement("div");
+      section.className = "asset-file-section";
+
+      var title = document.createElement("h3");
+      title.className = "camera-group-title";
+      title.textContent = group[1];
+      section.appendChild(title);
+
+      if (items.length === 0) {
+        section.appendChild(createPlaceholder("No " + group[0] + " files exposed."));
+        elements.loadPanelContent.appendChild(section);
+        return;
+      }
+
+      anyFiles = true;
+
+      items.forEach(function (file) {
+        var row = document.createElement("div");
+        row.className = "asset-file-row" + (group[0] === "failed" ? " is-failed" : "");
+
+        var main = document.createElement("div");
+        main.className = "asset-file-main";
+        main.textContent = formatValue(file.key || file.url || "(unknown asset)");
+
+        var meta = document.createElement("div");
+        meta.className = "asset-file-meta";
+        meta.textContent = [
+          file.type ? "type: " + file.type : null,
+          file.state ? "state: " + file.state : null,
+          file.url ? "url: " + file.url : null,
+          file.error ? "error: " + file.error : null
+        ]
+          .filter(Boolean)
+          .join(" | ");
+
+        row.appendChild(main);
+        row.appendChild(meta);
+        section.appendChild(row);
+      });
+
+      elements.loadPanelContent.appendChild(section);
+    });
+
+    if (!anyFiles) {
+      elements.loadPanelContent.appendChild(
+        createPlaceholder("This Phaser version is not exposing loader file queues right now.")
+      );
+    }
+  }
+
+  function renderLoaderEvents(events) {
+    var section = document.createElement("div");
+    section.className = "asset-file-section";
+
+    var title = document.createElement("h3");
+    title.className = "camera-group-title";
+    title.textContent = "Recent loader events";
+    section.appendChild(title);
+
+    if (!Array.isArray(events) || events.length === 0) {
+      section.appendChild(createPlaceholder("No loader events captured yet."));
+      elements.loadPanelContent.appendChild(section);
+      return;
+    }
+
+    events
+      .slice()
+      .reverse()
+      .forEach(function (event) {
+        var row = document.createElement("div");
+        row.className =
+          "asset-file-row" +
+          (event.event === "loaderror" || event.error ? " is-failed" : "");
+
+        var main = document.createElement("div");
+        main.className = "asset-file-main";
+        main.textContent = formatValue(event.key || event.url || "(unknown asset)");
+
+        var meta = document.createElement("div");
+        meta.className = "asset-file-meta";
+        meta.textContent = [
+          event.event ? "event: " + event.event : null,
+          event.type ? "type: " + event.type : null,
+          event.state ? "state: " + event.state : null,
+          event.url ? "url: " + event.url : null,
+          event.error ? "error: " + event.error : null
+        ]
+          .filter(Boolean)
+          .join(" | ");
+
+        row.appendChild(main);
+        row.appendChild(meta);
+        section.appendChild(row);
+      });
+
+    elements.loadPanelContent.appendChild(section);
+  }
+
+  function getFilteredTextures() {
+    var query = state.textureFilterQuery.trim().toLowerCase();
+
+    if (!query) {
+      return state.textureCache;
+    }
+
+    return state.textureCache.filter(function (texture) {
+      return String(texture.key || "").toLowerCase().indexOf(query) !== -1;
+    });
+  }
+
+  function rememberTextureListScroll() {
+    var list = elements.texturesPanelContent
+      ? elements.texturesPanelContent.querySelector(".texture-list")
+      : null;
+
+    state.pendingTextureListScrollTop = list ? list.scrollTop : state.pendingTextureListScrollTop;
+  }
+
+  function renderTexturesPanel() {
+    var existingTextureList = elements.texturesPanelContent.querySelector(".texture-list");
+    var textureListScrollTop =
+      state.pendingTextureListScrollTop !== null
+        ? state.pendingTextureListScrollTop
+        : existingTextureList
+          ? existingTextureList.scrollTop
+          : null;
+
+    elements.texturesPanelContent.innerHTML = "";
+
+    if (!state.snapshot || !state.snapshot.detected) {
+      elements.texturesPanelContent.appendChild(createPlaceholder("No Phaser game detected."));
+      return;
+    }
+
+    var textures = getFilteredTextures();
+    var layout = document.createElement("div");
+    layout.className = "texture-panel-grid";
+
+    var list = document.createElement("div");
+    list.className = "texture-list";
+
+    if (textures.length === 0) {
+      list.appendChild(createPlaceholder("No matching textures found."));
+    } else {
+      textures.forEach(function (texture) {
+        var button = document.createElement("button");
+        button.type = "button";
+        button.className =
+          "texture-row" + (texture.key === state.selectedTextureKey ? " selected" : "");
+        button.dataset.textureKey = texture.key;
+
+        var title = document.createElement("span");
+        title.className = "texture-row-title";
+        title.textContent = texture.key;
+
+        var meta = document.createElement("span");
+        meta.className = "texture-row-meta";
+        meta.textContent =
+          formatNumber(texture.width, 0) +
+          "x" +
+          formatNumber(texture.height, 0) +
+          " | " +
+          formatValue(texture.frameCount) +
+          " frames | used " +
+          formatValue(texture.usageCount);
+
+        button.appendChild(title);
+        button.appendChild(meta);
+        list.appendChild(button);
+      });
+    }
+
+    var details = document.createElement("div");
+    details.className = "texture-details";
+    renderTextureDetails(details);
+
+    layout.appendChild(list);
+    layout.appendChild(details);
+    elements.texturesPanelContent.appendChild(layout);
+
+    if (textureListScrollTop !== null) {
+      list.scrollTop = textureListScrollTop;
+      state.pendingTextureListScrollTop = null;
+    }
+  }
+
+  function renderTextureDetails(details) {
+    details.innerHTML = "";
+
+    if (!state.textureDetails) {
+      details.appendChild(createPlaceholder("Select a texture to inspect frames and preview."));
+      return;
+    }
+
+    var textureDetails = state.textureDetails;
+    var header = document.createElement("div");
+    header.className = "texture-details-header";
+
+    var heading = document.createElement("h3");
+    heading.className = "camera-group-title";
+    heading.textContent = textureDetails.key;
+    header.appendChild(heading);
+
+    if (textureDetails.preview) {
+      var preview = document.createElement("img");
+      preview.className = "texture-preview";
+      preview.src = textureDetails.preview;
+      preview.alt = "";
+      header.appendChild(preview);
+    } else {
+      var previewPlaceholder = document.createElement("div");
+      previewPlaceholder.className = "texture-preview-placeholder";
+      previewPlaceholder.textContent = "Preview unavailable";
+      header.appendChild(previewPlaceholder);
+    }
+
+    details.appendChild(header);
+    details.appendChild(
+      createInfoGrid([
+        ["Size", formatNumber(textureDetails.width, 0) + " x " + formatNumber(textureDetails.height, 0)],
+        ["Preview", formatValue(textureDetails.previewStatus && textureDetails.previewStatus.state)],
+        ["Preview detail", formatValue(textureDetails.previewStatus && textureDetails.previewStatus.detail)],
+        [
+          "Preview source",
+          formatValue(
+            textureDetails.previewStatus &&
+              textureDetails.previewStatus.sourceTypes &&
+              textureDetails.previewStatus.sourceTypes.join(", ")
+          )
+        ],
+        ["Original URL", formatValue(textureDetails.originalUrl)],
+        ["Source URL", formatValue(textureDetails.sourceUrl)],
+        ["Sources", formatValue(textureDetails.sourceCount)],
+        ["Frames", formatValue(textureDetails.frameCount)],
+        ["Used by objects", formatValue(textureDetails.usageCount)]
+      ])
+    );
+
+    var frameList = document.createElement("div");
+    frameList.className = "texture-frame-list";
+
+    (textureDetails.frames || []).forEach(function (frame) {
+      var frameRow = document.createElement("div");
+      frameRow.className = "texture-frame-row";
+      frameRow.textContent =
+        formatValue(frame.name) +
+        " | " +
+        formatNumber(frame.width, 0) +
+        "x" +
+        formatNumber(frame.height, 0) +
+        " @ " +
+        formatNumber(frame.x, 0) +
+        "," +
+        formatNumber(frame.y, 0);
+      frameList.appendChild(frameRow);
+    });
+
+    details.appendChild(frameList);
+  }
+
+  function renderCurrentTextureDetails() {
+    var details = elements.texturesPanelContent.querySelector(".texture-details");
+
+    if (details) {
+      renderTextureDetails(details);
+    } else {
+      renderTexturesPanel();
+    }
+  }
+
+  function activateTextureRow(textureKey) {
+    Array.prototype.forEach.call(
+      elements.texturesPanelContent.querySelectorAll(".texture-row"),
+      function (row) {
+        row.classList.toggle("selected", row.dataset.textureKey === textureKey);
+      }
+    );
   }
 
   function createCameraGroup(title, fields) {
@@ -1757,12 +2102,109 @@
     );
   }
 
+  function formatVector(vector) {
+    if (!vector) {
+      return "-";
+    }
+
+    return formatNumber(vector.x) + ", " + formatNumber(vector.y);
+  }
+
+  function formatFlags(flags) {
+    if (!flags) {
+      return "-";
+    }
+
+    return ["up", "down", "left", "right"]
+      .filter(function (key) {
+        return flags[key] === true;
+      })
+      .join(", ") || "none";
+  }
+
+  function renderPhysicsPanel() {
+    elements.physicsPanelContent.innerHTML = "";
+
+    if (!state.selectedSceneKey) {
+      elements.physicsPanelContent.appendChild(createPlaceholder("Select a scene to inspect physics."));
+      return;
+    }
+
+    var physics = getSelectedScenePhysics() || {};
+    var world = physics.world;
+
+    if (!world) {
+      elements.physicsPanelContent.appendChild(
+        createPlaceholder("No Arcade Physics world found for this scene.")
+      );
+      return;
+    }
+
+    var bounds = world.bounds;
+
+    elements.physicsPanelContent.appendChild(
+      createCameraGroup("Arcade World", [
+        { label: "Paused", value: formatBoolean(world.paused) },
+        { label: "Gravity", value: formatVector(world.gravity) },
+        {
+          label: "Bounds",
+          value: bounds
+            ? formatNumber(bounds.x) +
+              ", " +
+              formatNumber(bounds.y) +
+              " " +
+              formatNumber(bounds.width) +
+              "x" +
+              formatNumber(bounds.height)
+            : "-"
+        },
+        { label: "Bodies", value: formatNumber(world.bodiesCount, 0) },
+        { label: "Static bodies", value: formatNumber(world.staticBodiesCount, 0) }
+      ])
+    );
+
+    var body =
+      state.objectDetails && state.objectDetails.object
+        ? state.objectDetails.object.physicsBody
+        : null;
+
+    if (!body) {
+      elements.physicsPanelContent.appendChild(
+        createPlaceholder("Select an Arcade Physics object to inspect its body.")
+      );
+      return;
+    }
+
+    elements.physicsPanelContent.appendChild(
+      createCameraGroup("Selected Body", [
+        { label: "Enabled", value: formatBoolean(body.enabled) },
+        {
+          label: "Position",
+          value: formatNumber(body.x) + ", " + formatNumber(body.y)
+        },
+        {
+          label: "Size",
+          value: formatNumber(body.width) + " x " + formatNumber(body.height)
+        },
+        { label: "Velocity", value: formatVector(body.velocity) },
+        { label: "Acceleration", value: formatVector(body.acceleration) },
+        { label: "Gravity", value: formatVector(body.gravity) },
+        { label: "Immovable", value: formatBoolean(body.immovable) },
+        { label: "Allow gravity", value: formatBoolean(body.allowGravity) },
+        { label: "Moves", value: formatBoolean(body.moves) },
+        { label: "Blocked", value: formatFlags(body.blocked) },
+        { label: "Touching", value: formatFlags(body.touching) }
+      ])
+    );
+  }
+
   function renderSceneInspectorPanels() {
     renderSceneInspectorHeader();
     renderInspectorTabs();
     renderStatePanel();
     renderLoadPanel();
     renderCameraPanel();
+    renderPhysicsPanel();
     renderFpsPanel();
   }
 
@@ -1817,6 +2259,51 @@
       state.outlinedObjectPath,
       hasChangedObjectDetails(highlightedObject) || !!(highlightedSummary && highlightedSummary.changed)
     );
+  }
+
+  function syncConsoleHelpers() {
+    if (!state.consoleHelpersEnabled) {
+      return Promise.resolve(null);
+    }
+
+    return window.PhaserBridge.exportConsoleHelpers(state.selectedSceneKey, state.selectedObjectPath);
+  }
+
+  async function exportConsoleHelpers() {
+    if (!state.selectedSceneKey) {
+      setStatus("Select a scene before exporting console helpers", true);
+      return;
+    }
+
+    var result = await window.PhaserBridge.exportConsoleHelpers(
+      state.selectedSceneKey,
+      state.selectedObjectPath
+    );
+
+    state.consoleHelpersEnabled = (result.exported || []).length > 0;
+    setStatus(
+      (result.exported || []).length > 0
+        ? "Exported " + result.exported.join(", ") + " to the page console"
+        : "Console helper names are already used on this page",
+      (result.exported || []).length === 0
+    );
+  }
+
+  async function syncOverlayOptions() {
+    if (!state.selectedSceneKey) {
+      return;
+    }
+
+    state.overlayOptions = await window.PhaserBridge.setDebugOverlayOptions({
+      selectedBounds: state.overlayOptions.selectedBounds,
+      allBounds: state.overlayOptions.allBounds,
+      origins: state.overlayOptions.origins,
+      cameraViewport: state.overlayOptions.cameraViewport,
+      cameraWorldView: state.overlayOptions.cameraWorldView,
+      sceneKey: state.selectedSceneKey,
+      objectPath: state.selectedObjectPath
+    });
+    renderToolbarButtons();
   }
 
   async function loadSelectedSceneInspector() {
@@ -1893,6 +2380,67 @@
     renderObjectList();
   }
 
+  async function loadTextureCache() {
+    if (!state.snapshot || !state.snapshot.detected) {
+      state.textureCache = [];
+      state.textureDetails = null;
+      state.selectedTextureKey = null;
+      renderTexturesPanel();
+      return;
+    }
+
+    var requestId = state.textureRequestId + 1;
+    state.textureRequestId = requestId;
+
+    var textureData = await window.PhaserBridge.getTextureCache();
+
+    if (requestId !== state.textureRequestId) {
+      return;
+    }
+
+    state.textureCache = Array.isArray(textureData.textures) ? textureData.textures : [];
+
+    if (
+      state.selectedTextureKey &&
+      !state.textureCache.some(function (texture) {
+        return texture.key === state.selectedTextureKey;
+      })
+    ) {
+      state.selectedTextureKey = null;
+      state.textureDetails = null;
+    }
+
+    if (!state.selectedTextureKey && state.textureCache.length > 0) {
+      state.selectedTextureKey = state.textureCache[0].key;
+    }
+
+    renderTexturesPanel();
+
+    if (state.selectedTextureKey) {
+      await loadTextureDetails(state.selectedTextureKey);
+    }
+  }
+
+  async function loadTextureDetails(textureKey) {
+    if (!textureKey) {
+      state.textureDetails = null;
+      renderCurrentTextureDetails();
+      return;
+    }
+
+    var requestId = state.textureRequestId + 1;
+    state.textureRequestId = requestId;
+
+    var result = await window.PhaserBridge.getTextureDetails(textureKey);
+
+    if (requestId !== state.textureRequestId) {
+      return;
+    }
+
+    state.textureDetails = result && result.texture ? result.texture : null;
+    renderCurrentTextureDetails();
+  }
+
   async function hydrateFromSnapshot(snapshot, options) {
     var detected = applySnapshotState(snapshot, options);
     renderAll();
@@ -1924,6 +2472,10 @@
     }
 
     await loadSelectedSceneInspector();
+    await syncOverlayOptions();
+    if (state.activeInspectorTab === "textures") {
+      await loadTextureCache();
+    }
   }
 
   async function refreshData(options) {
@@ -1995,6 +2547,8 @@
     await loadSelectedObjectDetails();
     await loadSelectedSceneInspector();
     await syncPageHighlight();
+    await syncOverlayOptions();
+    await syncConsoleHelpers();
     setStatus(sourceLabel, false);
   }
 
@@ -2015,6 +2569,8 @@
 
     await loadSelectedObjectDetails();
     await syncPageHighlight();
+    await syncOverlayOptions();
+    await syncConsoleHelpers();
     setStatus("Inspecting object " + objectPath, false);
   }
 
@@ -2025,6 +2581,8 @@
     state.outlinedObjectPath = null;
     renderObjectList();
     await window.PhaserBridge.clearHighlight();
+    await syncOverlayOptions();
+    await syncConsoleHelpers();
     setStatus("Closed object inspector", false);
   }
 
@@ -2428,6 +2986,8 @@
       await window.PhaserBridge.clearHighlight();
       await loadSelectedSceneObjects();
       await loadSelectedSceneInspector();
+      await syncOverlayOptions();
+      await syncConsoleHelpers();
       setStatus("Loaded " + state.sceneObjects.length + " objects from " + sceneKey, false);
     } catch (error) {
       setStatus(error.message || "Failed to load scene objects", true);
@@ -2510,6 +3070,11 @@
             copiedField ? "Copied " + fieldLabel + " value" : "Failed to copy " + fieldLabel + " value",
             !copiedField
           );
+          return;
+        }
+
+        if (actionName === "exportConsole") {
+          await exportConsoleHelpers();
           return;
         }
 
@@ -2631,6 +3196,10 @@
 
     if (nextTab === "displayObjects" && state.selectedSceneKey) {
       elements.objectList.focus();
+    } else if (nextTab === "textures" && state.snapshot && state.snapshot.detected) {
+      loadTextureCache().catch(function (error) {
+        setStatus(error.message || "Failed to load textures", true);
+      });
     } else if (state.selectedSceneKey) {
       loadSelectedSceneInspector().catch(function () {
         // Passive refresh only.
@@ -2689,6 +3258,39 @@
     }
   }
 
+  function handleTextureClick(event) {
+    var row = event.target.closest("[data-texture-key]");
+
+    if (!row) {
+      return;
+    }
+
+    rememberTextureListScroll();
+    state.selectedTextureKey = row.dataset.textureKey;
+    activateTextureRow(state.selectedTextureKey);
+    loadTextureDetails(state.selectedTextureKey).catch(function (error) {
+      setStatus(error.message || "Failed to load texture details", true);
+    });
+  }
+
+  function handleOverlayChange(event) {
+    var control = event.target.closest("[data-overlay-option]");
+
+    if (!control) {
+      return;
+    }
+
+    state.overlayOptions[control.dataset.overlayOption] = control.checked;
+
+    syncOverlayOptions()
+      .then(function () {
+        setStatus("Updated debug overlays", false);
+      })
+      .catch(function (error) {
+        setStatus(error.message || "Failed to update debug overlays", true);
+      });
+  }
+
   function bindEvents() {
     elements.refreshButton.addEventListener("click", function () {
       refreshData({ preserveSelection: true });
@@ -2714,6 +3316,7 @@
     elements.objectList.addEventListener("keydown", function (event) {
       handleTreeKeydown(event);
     });
+    elements.overlayControls.addEventListener("change", handleOverlayChange);
     elements.breadcrumbs.addEventListener("click", handleObjectClick);
     elements.statePanelContent.addEventListener("click", handleSceneActionClick);
     elements.cameraPanelContent.addEventListener("click", handleCameraActionClick);
@@ -2730,6 +3333,11 @@
 
       renderObjectList();
     });
+    elements.textureFilter.addEventListener("input", function (event) {
+      state.textureFilterQuery = event.target.value || "";
+      renderTexturesPanel();
+    });
+    elements.texturesPanelContent.addEventListener("click", handleTextureClick);
 
     window.addEventListener("focus", maybeAutoRefresh);
     window.addEventListener("pageshow", maybeAutoRefresh);

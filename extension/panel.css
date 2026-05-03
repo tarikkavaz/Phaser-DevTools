@@ -380,6 +380,30 @@ input {
   padding: 8px 10px;
 }
 
+.overlay-controls,
+.texture-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.overlay-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 7px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel-muted);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.overlay-control input {
+  margin: 0;
+}
+
 .tree-filter-input:focus,
 .camera-control:focus {
   outline: 1px solid var(--accent);
@@ -723,8 +747,9 @@ input {
 
 .tree-row-title-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 8px;
   width: 100%;
   min-width: 0;
@@ -734,16 +759,19 @@ input {
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 4px;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  margin-left: auto;
 }
 
 .tree-row-name {
   display: block;
-  min-width: 0;
-  overflow-wrap: anywhere;
+  min-width: min(160px, 100%);
+  overflow-wrap: break-word;
+  word-break: normal;
   font-weight: 600;
-  flex: 1 1 auto;
+  flex: 1 1 160px;
 }
 
 .tree-row-change-indicator {
@@ -1034,6 +1062,124 @@ input {
   background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 70%, white));
 }
 
+.asset-file-section,
+.texture-details,
+.texture-frame-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.asset-file-row,
+.texture-frame-row {
+  display: grid;
+  gap: 2px;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel-muted);
+}
+
+.asset-file-row.is-failed {
+  border-color: color-mix(in srgb, var(--danger) 48%, var(--border));
+}
+
+.asset-file-main {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.asset-file-meta,
+.texture-row-meta,
+.texture-frame-row {
+  color: var(--muted);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.texture-toolbar {
+  margin-bottom: 10px;
+}
+
+.texture-panel-grid {
+  display: grid;
+  grid-template-columns: minmax(160px, 240px) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.texture-list {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  max-height: 58vh;
+  overflow: auto;
+}
+
+.texture-row {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  padding: 7px 8px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.texture-row:hover {
+  border-color: var(--accent);
+}
+
+.texture-row.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.texture-row-title {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.texture-details-header {
+  display: grid;
+  gap: 8px;
+}
+
+.texture-preview,
+.texture-preview-placeholder {
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background:
+    linear-gradient(45deg, color-mix(in srgb, var(--panel-muted) 65%, transparent) 25%, transparent 25%),
+    linear-gradient(-45deg, color-mix(in srgb, var(--panel-muted) 65%, transparent) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, color-mix(in srgb, var(--panel-muted) 65%, transparent) 75%),
+    linear-gradient(-45deg, transparent 75%, color-mix(in srgb, var(--panel-muted) 65%, transparent) 75%);
+  background-position:
+    0 0,
+    0 8px,
+    8px -8px,
+    -8px 0;
+  background-size: 16px 16px;
+}
+
+.texture-preview {
+  max-height: 180px;
+  object-fit: contain;
+}
+
+.texture-preview-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 96px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
 .scene-action-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
@@ -1131,6 +1277,7 @@ input {
   }
 
   .inline-inspector,
+  .texture-panel-grid,
   .game-info-row-summary,
   .game-info-row-pairs {
     grid-template-columns: 1fr;
