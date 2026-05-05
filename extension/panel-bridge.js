@@ -3175,13 +3175,92 @@
     }
   }
 
-  function evaluateCommand(command) {
-    return new Promise(function (resolve, reject) {
-      var expression = "(" + inspectedPageExecutor.toString() + ")(" + JSON.stringify(command) + ")";
+  var cachedFrameURL = null;
 
-      chrome.devtools.inspectedWindow.eval(expression, function (result, exceptionInfo) {
-        if (exceptionInfo && exceptionInfo.isException) {
-          reject(new Error(exceptionInfo.value || "Failed to evaluate the inspected page"));
+  function discoveryExecutor() {
+    function addCandidate(candidates, seen, value) {
+      if (typeof value !== "string" || value.length === 0 || seen[value]) {
+        return;
+      }
+
+      seen[value] = true;
+      candidates.push(value);
+    }
+
+    function addURLCandidate(candidates, seen, value, baseURL) {
+      if (typeof value !== "string" || value.length === 0) {
+        return;
+      }
+
+      try {
+        addCandidate(candidates, seen, new URL(value, baseURL || window.location.href).href);
+      } catch (error) {
+        addCandidate(candidates, seen, value);
+      }
+    }
+
+    function getSimTargetFromURL(href) {
+      try {
+        return new URL(href).searchParams.get("simtarget");
+      } catch (error) {
+        return null;
+      }
+    }
+
+    var candidates = [];
+    var seen = {};
+    var frames = [];
+    var simtarget = getSimTargetFromURL(window.location.href);
+
+    addURLCandidate(candidates, seen, simtarget, window.location.href);
+
+    try {
+      frames = Array.prototype.slice.call(document.querySelectorAll("iframe, frame"));
+    } catch (error) {
+      frames = [];
+    }
+
+    frames.forEach(function (frame) {
+      var src = null;
+
+      try {
+        src = frame.src || frame.getAttribute("src");
+      } catch (error) {
+        src = null;
+      }
+
+      addURLCandidate(candidates, seen, src, window.location.href);
+      addURLCandidate(candidates, seen, getSimTargetFromURL(src), window.location.href);
+
+      try {
+        if (frame.contentWindow && frame.contentWindow.location) {
+          addURLCandidate(candidates, seen, frame.contentWindow.location.href, window.location.href);
+        }
+      } catch (error) {
+        // Cross-origin frame locations are inaccessible; frame.src still covers normal cases.
+      }
+    });
+
+    return {
+      ok: true,
+      data: {
+        candidates: candidates
+      }
+    };
+  }
+
+  function evaluateExpression(expression, frameURL) {
+    return new Promise(function (resolve, reject) {
+      function handleResult(result, exceptionInfo) {
+        if (exceptionInfo && (exceptionInfo.isException || exceptionInfo.isError)) {
+          reject(
+            new Error(
+              exceptionInfo.value ||
+                exceptionInfo.description ||
+                exceptionInfo.code ||
+                "Failed to evaluate the inspected page"
+            )
+          );
           return;
         }
 
@@ -3196,6 +3275,119 @@
         }
 
         resolve(result.data);
+      }
+
+      if (frameURL) {
+        chrome.devtools.inspectedWindow.eval(expression, { frameURL: frameURL }, handleResult);
+      } else {
+        chrome.devtools.inspectedWindow.eval(expression, handleResult);
+      }
+    });
+  }
+
+  function evaluateCommandInFrame(command, frameURL) {
+    var expression = "(" + inspectedPageExecutor.toString() + ")(" + JSON.stringify(command) + ")";
+
+    return evaluateExpression(expression, frameURL);
+  }
+
+  function discoverFrameURLs() {
+    return evaluateExpression("(" + discoveryExecutor.toString() + ")()", null).then(function (result) {
+      return result && Array.isArray(result.candidates) ? result.candidates : [];
+    });
+  }
+
+  function findPhaserFrame() {
+    return discoverFrameURLs().then(function (frameURLs) {
+      var chain = Promise.resolve(null);
+
+      frameURLs.forEach(function (frameURL) {
+        chain = chain.then(function (match) {
+          if (match) {
+            return match;
+          }
+
+          return evaluateCommandInFrame({ type: "snapshot" }, frameURL)
+            .then(function (snapshot) {
+              return snapshot && snapshot.detected ? frameURL : null;
+            })
+            .catch(function () {
+              return null;
+            });
+        });
+      });
+
+      return chain;
+    });
+  }
+
+  function evaluateWithResolvedFrame(command, options) {
+    var allowRetry = !options || options.allowRetry !== false;
+
+    if (cachedFrameURL) {
+      return evaluateCommandInFrame(command, cachedFrameURL).catch(function (error) {
+        if (!allowRetry) {
+          throw error;
+        }
+
+        cachedFrameURL = null;
+        return findPhaserFrame().then(function (frameURL) {
+          if (!frameURL) {
+            throw error;
+          }
+
+          cachedFrameURL = frameURL;
+          return evaluateCommandInFrame(command, cachedFrameURL);
+        });
+      });
+    }
+
+    return evaluateCommandInFrame(command, null);
+  }
+
+  function evaluateCommand(command, options) {
+    if (command.type === "snapshot") {
+      return evaluateCommandInFrame(command, null).then(function (snapshot) {
+        if (snapshot && snapshot.detected) {
+          cachedFrameURL = null;
+          return snapshot;
+        }
+
+        return findPhaserFrame().then(function (frameURL) {
+          if (!frameURL) {
+            cachedFrameURL = null;
+            return snapshot;
+          }
+
+          cachedFrameURL = frameURL;
+          return evaluateCommandInFrame(command, cachedFrameURL);
+        });
+      });
+    }
+
+    if (cachedFrameURL) {
+      return evaluateWithResolvedFrame(command, options);
+    }
+
+    return findPhaserFrame().then(function (frameURL) {
+      if (frameURL) {
+        cachedFrameURL = frameURL;
+        return evaluateCommandInFrame(command, cachedFrameURL);
+      }
+
+      return evaluateCommandInFrame(command, null).catch(function (error) {
+        if (options && options.allowRetry === false) {
+          throw error;
+        }
+
+        return findPhaserFrame().then(function (retryFrameURL) {
+          if (!retryFrameURL) {
+            throw error;
+          }
+
+          cachedFrameURL = retryFrameURL;
+          return evaluateCommandInFrame(command, cachedFrameURL);
+        });
       });
     });
   }
