@@ -2,6 +2,6 @@
   "name": "phaser-devtools",
   "private": true,
   "scripts": {
-    "zip:release": "cd extension && zip -r ../phaser-devtools-v0.1.2.zip ."
+    "zip:release": "cd extension && zip -r ../phaser-devtools-v0.1.2b.zip ."
   }
 }
