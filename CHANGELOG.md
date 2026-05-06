@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.3 - 2026-05-06
+
+- Added Phaser detection inside simulator iframes, including customer simulator pages that pass a local dev server through `simtarget`.
+- Routed DevTools panel commands to the detected iframe so scene/object inspection, overlays, picking, edits, and console exports keep working outside the main frame.
+- Updated extension injection to run the page hook in real page frames.
+
 ## 0.1.2 - 2026-05-03
 
 - Added a `Textures` tab with texture metadata, frame details, usage counts, preview diagnostics, source URL, and best-effort original loader URL tracking.
